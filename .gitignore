@@ -88,6 +88,8 @@ AppPackages/
 
 # Others
 sql/
+src/published/
+wwwroot/lib/
 *.Cache
 ClientBin/
 [Ss]tyle[Cc]op.*
