@@ -1,0 +1,43 @@
+﻿<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="text-center">LaTeX + Asymptote Compiler</h2>
+                </div>
+                <div class="card-body">
+                    <form id="uploadForm" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="texFile" class="form-label">Выберите .tex файл:</label>
+                            <input type="file" class="form-control" id="texFile" name="texFile" accept=".tex" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100" id="compileButton">
+                            Скомпилировать
+                        </button>
+                    </form>
+
+                    <div id="statusArea" class="mt-4" style="display: none;">
+                        <h4>Статус компиляции:</h4>
+                        <div class="progress mb-3" style="height: 20px;">
+                            <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                        </div>
+                        <div id="statusMessage" class="alert alert-info"></div>
+
+                        <div class="mt-2 text-center">
+                            <small class="text-muted" id="fileInfo" style="display: block !important;"></small>
+                        </div>
+
+                        <div id="errorMessage" class="alert alert-danger" style="display: none;"></div>
+                        <div id="successArea" style="display: none;">
+                            <a id="downloadLink" class="btn btn-success btn-lg w-100">Скачать PDF</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script src="~/js/site.js"></script>
+}
