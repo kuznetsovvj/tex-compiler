@@ -9,6 +9,11 @@ builder.Services.AddSingleton<CompilationManagerService>();
 builder.Services.AddSingleton<CompilationService>();
 builder.Services.AddHostedService<CleanupService>();
 
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto;
+});
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())
