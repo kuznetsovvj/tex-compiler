@@ -1,5 +1,6 @@
 ﻿using System.Diagnostics;
 using System.Text;
+using System.Threading.Tasks;
 using TexCompiler.Models;
 
 public class CompilationService
@@ -16,11 +17,12 @@ public class CompilationService
     public async Task<CompilationResult> CompileAsync(CompilationTask task)
     {
         var result = new CompilationResult();
-        var log = new StringBuilder();
         var startTime = DateTime.UtcNow;
 
         var tempDir = Path.Combine(Path.GetTempPath(), $"tex_compile_{Guid.NewGuid()}");
+        var logDir = Path.Combine(_environment.WebRootPath, "logs");
         Directory.CreateDirectory(tempDir);
+        Directory.CreateDirectory(logDir);
 
         try
         {
@@ -29,45 +31,31 @@ public class CompilationService
             // Первая компиляция LaTeX
             var latexArgs = $"-interaction=nonstopmode -shell-escape \"{task.FileName}\"";
             var latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
-            log.AppendLine("=== First LaTeX compilation ===");
-            log.AppendLine(latexResult.Output);
 
             if (!latexResult.Success)
             {
                 result.IsSuccess = false;
                 result.ErrorMessage = "LaTeX compilation failed";
-                result.Output = log.ToString();
+                await SaveLogToFile(result, task, logDir, tempDir);
                 return result;
             }
 
-            // Компиляция Asymptote файлов, если они есть
             var asyFiles = Directory.GetFiles(tempDir, "*.asy");
             _logger.LogInformation("Found {Count} Asymptote files", asyFiles.Length);
 
             if (asyFiles.Length > 0)
             {
-                // Компилируем все .asy файлы за один вызов
                 var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, tempDir);
-                log.AppendLine("=== Asymptote compilation ===");
-                log.AppendLine(asyResult.Output);
-                if (!string.IsNullOrEmpty(asyResult.Error))
-                {
-                    log.AppendLine("=== Asymptote Errors ===");
-                    log.AppendLine(asyResult.Error);
-                }
-
-                // Логируем информацию о компилированных файлах
-                log.AppendLine($"Compiled {asyFiles.Length} Asymptote files in single call");
-                foreach (var asyFile in asyFiles)
-                {
-                    log.AppendLine($"  - {Path.GetFileName(asyFile)}");
-                }
             }
 
-            // Вторая компиляция LaTeX для включения сгенерированных изображений
             latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
-            log.AppendLine("=== Second LaTeX compilation ===");
-            log.AppendLine(latexResult.Output);
+            if (!latexResult.Success)
+            {
+                result.IsSuccess = false;
+                result.ErrorMessage = "LaTeX compilation failed";
+                await SaveLogToFile(result, task, logDir, tempDir);
+                return result;
+            }
 
             // Проверяем, создался ли PDF
             var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.FileName) + ".pdf");
@@ -83,6 +71,7 @@ public class CompilationService
 
                 result.IsSuccess = true;
                 result.FilePath = outputPdfPath;
+
             }
             else
             {
@@ -94,17 +83,16 @@ public class CompilationService
         {
             result.IsSuccess = false;
             result.ErrorMessage = $"Compilation error: {ex.Message}";
+            await SaveLogToFile(result, task, logDir, tempDir);
             _logger.LogError(ex, "Compilation error for task {TaskId}", task.TaskId);
         }
         finally
         {
-                // Гарантированное удаление временной папки
-                await CleanupTempDirectory(tempDir);
-            }
+            await SaveLogToFile(result, task, logDir, tempDir);
+            // Гарантированное удаление временной папки
+            await CleanupTempDirectory(tempDir);
+        }
 
-
-
-        result.Output = log.ToString();
         result.Duration = DateTime.UtcNow - startTime;
         return result;
     }
@@ -220,6 +208,28 @@ public class CompilationService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Unexpected error during temp directory cleanup: {Directory}", tempDir);
+        }
+    }
+
+    private async Task SaveLogToFile(CompilationResult result, CompilationTask task, string logsDir, string tempDir)
+    {
+        try
+        {
+            var logFilePath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.FileName) + ".log");
+            if (File.Exists(logFilePath))
+            {
+                var outputLogName = $"{Path.GetFileNameWithoutExtension(task.FileName)}.log";
+                var outputLogPath = Path.Combine(_environment.WebRootPath, "logs", outputLogName);
+
+                Directory.CreateDirectory(Path.GetDirectoryName(outputLogPath));
+                File.Copy(logFilePath, outputLogPath, overwrite: true);
+
+                result.LogFilePath = outputLogPath;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save log file for task {TaskId}", task.TaskId);
         }
     }
 }

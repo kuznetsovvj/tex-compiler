@@ -114,7 +114,19 @@
         statusArea.style.display = 'block';
         document.getElementById('progressBar').style.width = '10%';
         document.getElementById('statusMessage').textContent = 'Файл загружен, ожидание в очереди...';
+
+        // Скрываем области успеха и ошибки при новом запуске
+        this.hideResultAreas();
+
         console.log('Status area shown');
+    }
+
+    hideResultAreas() {
+        const successArea = document.getElementById('successArea');
+        const errorArea = document.getElementById('errorArea');
+
+        if (successArea) successArea.style.display = 'none';
+        if (errorArea) errorArea.style.display = 'none';
     }
 
     startStatusPolling() {
@@ -191,17 +203,21 @@
         const statusMessage = document.getElementById('statusMessage');
         const errorMessage = document.getElementById('errorMessage');
         const successArea = document.getElementById('successArea');
+        const errorArea = document.getElementById('errorArea');
         const downloadLink = document.getElementById('downloadLink');
+        const downloadLogLink = document.getElementById('downloadLogLink');
         const fileInfo = document.getElementById('fileInfo');
 
-        console.log('FileInfo element:', fileInfo); // Добавим отладку
+        console.log('FileInfo element:', fileInfo);
 
         if (!progressBar || !statusMessage) {
             console.error('Required UI elements not found');
             return;
         }
 
-        // Скрываем ошибку по умолчанию
+        // Скрываем все области результатов сначала
+        if (successArea) successArea.style.display = 'none';
+        if (errorArea) errorArea.style.display = 'none';
         if (errorMessage) errorMessage.style.display = 'none';
 
         // Функция для отображения длительности
@@ -253,13 +269,6 @@
                 }
 
                 displayDuration('Время компиляции');
-
-                // ОСТАНАВЛИВАЕМ POLLING при завершении
-                if (this.statusInterval) {
-                    console.log('Stopping polling for completed task');
-                    clearInterval(this.statusInterval);
-                    this.statusInterval = null;
-                }
                 break;
 
             case 'Failed':
@@ -267,26 +276,94 @@
                 progressBar.className = 'progress-bar bg-danger';
                 statusMessage.textContent = 'Ошибка компиляции';
 
+                // Показываем область ошибки с кнопкой скачивания лога
+                if (errorArea) {
+                    errorArea.style.display = 'block';
+                    console.log('Error area shown');
+                }
+
                 if (errorMessage) {
                     errorMessage.textContent = status.errorMessage || 'Неизвестная ошибка';
                     errorMessage.style.display = 'block';
                 }
 
-                displayDuration('Время до ошибки');
-
-                // ОСТАНАВЛИВАЕМ POLLING при ошибке
-                if (this.statusInterval) {
-                    console.log('Stopping polling for failed task');
-                    clearInterval(this.statusInterval);
-                    this.statusInterval = null;
+                // Настраиваем кнопку скачивания лога
+                if (downloadLogLink) {
+                    downloadLogLink.onclick = () => this.downloadLog(this.currentTaskId);
+                    downloadLogLink.style.display = 'inline-block';
+                    console.log('Download log button configured');
                 }
+
+                displayDuration('Время до ошибки');
                 break;
 
             default:
                 console.warn('Unknown status:', status.status);
         }
 
+        // ОСТАНАВЛИВАЕМ POLLING при завершении (успешном или с ошибкой)
+        if ((status.status === 'Completed' || status.status === 'Failed') && this.statusInterval) {
+            console.log('Stopping polling for completed/failed task');
+            clearInterval(this.statusInterval);
+            this.statusInterval = null;
+        }
+
         console.log('UI updated successfully');
+    }
+
+    async downloadLog(taskId) {
+        if (!taskId) {
+            console.error('No task ID for log download');
+            this.showError('Не удалось найти задачу для скачивания лога');
+            return;
+        }
+
+        console.log('Downloading log for task:', taskId);
+
+        try {
+            const response = await fetch(`/api/download-log/${taskId}`);
+
+            if (!response.ok) {
+                if (response.status === 404) {
+                    throw new Error('Лог файл не найден');
+                }
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            // Получаем имя файла из заголовка Content-Disposition
+            let fileName = `compile_log_${taskId}.txt`;
+            const contentDisposition = response.headers.get('Content-Disposition');
+
+            if (contentDisposition) {
+                const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                if (filenameMatch && filenameMatch[1]) {
+                    // Убираем кавычки если есть
+                    fileName = filenameMatch[1].replace(/['"]/g, '');
+                    console.log('Extracted filename from header:', fileName);
+                }
+            }
+
+            // Создаем blob и скачиваем файл
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = fileName; // Используем имя с бекенда
+
+            document.body.appendChild(a);
+            a.click();
+
+            // Очистка
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            console.log('Log downloaded successfully with filename:', fileName);
+
+        } catch (error) {
+            console.error('Log download failed:', error);
+            this.showError('Ошибка при скачивании лога: ' + error.message);
+        }
     }
 
     showError(message) {

@@ -14,7 +14,7 @@ COPY . .
 RUN dotnet publish src/TexCompiler.csproj -c Release -o /app
 
 WORKDIR /app
-RUN mkdir -p wwwroot/pdfs storage
+RUN mkdir -p wwwroot/pdfs wwwroot/logs storage 
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:5000
 

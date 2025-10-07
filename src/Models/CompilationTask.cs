@@ -31,6 +31,11 @@
 		public string SourceFileFullPath { get; set; }
 		public string PdfFilePath { get; set; }
 
+		/// <summary>
+		/// Путь к файлу с логами output компиляции
+		/// </summary>
+		public string LogFilePath { get; set; }
+
 		public CompilationTaskStatus TaskStatus { get; set; }
 
 		public TimeSpan? Duration

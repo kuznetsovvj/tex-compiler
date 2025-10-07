@@ -142,6 +142,7 @@ namespace TexCompiler.Services
 
                 task.CompletedAt = DateTime.UtcNow;
                 task.PdfFilePath = result.FilePath;
+                task.LogFilePath = result.LogFilePath;
                 task.ErrorMessage = result.ErrorMessage;
 
                 _taskStorage.UpdateTask(task);

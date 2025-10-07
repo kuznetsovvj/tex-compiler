@@ -179,5 +179,33 @@ namespace TexCompiler.Controllers
 				return StatusCode(500, "Произошла внутренняя ошибка при скачивании файла");
 			}
 		}
-	}
+
+        [HttpGet("api/download-log/{taskId}")]
+        public IActionResult DownloadLog(Guid taskId)
+        {
+            try
+            {
+                var task = _compilationManagerService.GetTaskStatus(taskId);
+                if (task == null || task.TaskStatus != CompilationTaskStatus.Failed)
+                {
+                    return NotFound("Лог компиляции не найден");
+                }
+
+                if (task.LogFilePath == null || task.LogFilePath.Length == 0)
+                {
+                    return NotFound("Лог компиляции не найден");
+                }
+
+                var logBytes = System.IO.File.ReadAllBytes(task.LogFilePath);
+                var fileName = Path.GetFileNameWithoutExtension(task.FileName) + ".log";
+
+                return File(logBytes, "text/plain", fileName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error downloading log for task {TaskId}", taskId);
+                return StatusCode(500, "Error downloading log file");
+            }
+        }
+    }
 }
