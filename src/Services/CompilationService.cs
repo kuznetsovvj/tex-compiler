@@ -25,6 +25,7 @@ public class CompilationService
         var logDir = Path.Combine(_environment.WebRootPath, "logs");
         Directory.CreateDirectory(tempDir);
         Directory.CreateDirectory(logDir);
+        var originalFileName = Path.GetFileNameWithoutExtension(task.FileName);
 
         try
         {
@@ -80,12 +81,24 @@ public class CompilationService
                 return result;
             }
 
+            // Параноидальная третья компиляция, чтобы точно создалось оглавление
+            latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
+            if (!latexResult.Success)
+            {
+                result.IsSuccess = false;
+                result.ErrorMessage = "LaTeX compilation failed";
+                await SaveLogToFile(result, task, logDir, tempDir);
+                return result;
+            }
+
             // Проверяем, создался ли PDF
             var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.FileName) + ".pdf");
             if (File.Exists(pdfPath))
             {
                 // Исправляем имя файла: убираем .tex и добавляем .pdf
-                var outputPdfName = $"{Path.GetFileNameWithoutExtension(task.FileName)}.pdf";
+                var outputPdfName = $"{originalFileName}.pdf";
+                task.FileName = outputPdfName;
+               
                 var outputPdfPath = Path.Combine(_environment.WebRootPath, "pdfs", outputPdfName);
 
                 Directory.CreateDirectory(Path.GetDirectoryName(outputPdfPath));
