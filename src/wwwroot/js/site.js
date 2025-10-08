@@ -45,8 +45,10 @@
         console.log('Processing file:', file.name, 'Size:', file.size, 'Type:', file.type);
 
         // Валидация файла
-        if (!file.name.toLowerCase().endsWith('.tex')) {
-            this.showError('Разрешены только файлы с расширением .tex');
+        const validExtensions = ['.tex', '.zip']
+        const fileExt = file.name.toLowerCase();
+        if (!validExtensions.some(ext => fileExt.endsWith(ext))) {
+            this.showError('Разрешены только файлы .tex или .zip');
             return;
         }
 

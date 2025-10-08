@@ -5,12 +5,10 @@
 	/// </summary>
 	public class CompilationTask
 	{
-		private readonly string _fileName;
-
 		public CompilationTask(string fileName, string fullFilePath)
 		{
 			TaskId = Guid.NewGuid();
-			_fileName = fileName;
+			FileName = fileName;
 			SourceFileFullPath = fullFilePath;
 			CreatedAt = DateTime.Now;
 			TaskStatus = CompilationTaskStatus.Queued;
@@ -18,7 +16,7 @@
 
 		public Guid TaskId { get; }
 
-		public string FileName => _fileName;
+		public string FileName { get; set; }
 
 		public DateTime CreatedAt { get; }
 

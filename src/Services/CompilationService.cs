@@ -1,4 +1,6 @@
 ﻿using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
 using System.Text;
 using System.Threading.Tasks;
 using TexCompiler.Models;
@@ -26,7 +28,28 @@ public class CompilationService
 
         try
         {
-            File.Copy(task.SourceFileFullPath, Path.Combine(tempDir, task.FileName), true);
+            if (Path.GetExtension(task.FileName).ToLower() == ".zip")
+            {
+                await ExtractZipArchive(task.SourceFileFullPath, tempDir);
+                var mainTexFile = FindMainTexFile(tempDir);
+
+                if (mainTexFile == null)
+                {
+                    return new CompilationResult
+                    {
+                        IsSuccess = false,
+                        ErrorMessage = "В архиве не найден .tex файл"
+                    };
+
+                }
+                task.FileName = Path.GetFileName(mainTexFile);
+            }
+            else
+            {
+                File.Copy(task.SourceFileFullPath, Path.Combine(tempDir, task.FileName), true);
+            }
+
+
 
             // Первая компиляция LaTeX
             var latexArgs = $"-interaction=nonstopmode -shell-escape \"{task.FileName}\"";
@@ -95,6 +118,34 @@ public class CompilationService
 
         result.Duration = DateTime.UtcNow - startTime;
         return result;
+    }
+
+    private string FindMainTexFile(string directory)
+    {
+        var texFiles = Directory.GetFiles(directory, "*.tex", SearchOption.AllDirectories);
+
+        // Приоритет: ищем файл с "main" в названии
+        var mainFile = texFiles.FirstOrDefault(f =>
+            Path.GetFileNameWithoutExtension(f).ToLower().Contains("main"));
+
+        // Или берем первый .tex файл
+        return mainFile ?? texFiles.FirstOrDefault();
+    }
+
+    private async Task ExtractZipArchive(string zipPath, string extractPath)
+    {
+        using var archive = ZipFile.OpenRead(zipPath);
+        foreach (var entry in archive.Entries)
+        {
+            var fullPath = Path.Combine(extractPath, entry.FullName);
+            var directory = Path.GetDirectoryName(fullPath);
+
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                Directory.CreateDirectory(directory);
+
+            if (!entry.FullName.EndsWith("/")) // не директория
+                entry.ExtractToFile(fullPath, true);
+        }
     }
 
     private bool IsDirectoryInUse(string tempDir)

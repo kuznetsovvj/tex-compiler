@@ -8,8 +8,15 @@
                 <div class="card-body">
                     <form id="uploadForm" enctype="multipart/form-data">
                         <div class="mb-3">
-                            <label for="texFile" class="form-label">Выберите .tex файл:</label>
-                            <input type="file" class="form-control" id="texFile" name="texFile" accept=".tex" required>
+                            <label for="texFile" class="form-label">
+                                <i class="fas fa-file-upload"></i> Выберите файл для компиляции:
+                            </label>
+                            <input type="file" class="form-control" id="texFile" name="texFile" accept=".tex,.zip" required>
+                            <div class="form-text">
+                                <strong>Поддерживаемые форматы:</strong><br>
+                                • <i class="fas fa-file-alt"></i> Одиночные .tex файлы<br>
+                                • <i class="fas fa-file-archive"></i> .zip архивы с проектом (изображения, стили, etc.)
+                            </div>
                         </div>
                         <button type="submit" class="btn btn-primary w-100" id="compileButton">
                             Скомпилировать

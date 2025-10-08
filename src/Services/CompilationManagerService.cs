@@ -40,7 +40,9 @@ namespace TexCompiler.Services
                     .Replace("/", "_")
                     .Replace("\\", "_");
 
-                var fileName = $"{timestamp}_{safeFileName}.tex";
+                var safeFileExt = Path.GetExtension(file.FileName);
+
+                var fileName = $"{timestamp}_{safeFileName}" + safeFileExt;
 
                 var filePath = Path.Combine(_storagePath, fileName);
 
