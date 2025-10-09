@@ -1,0 +1,27 @@
+name: Deploy to VDS
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VDS_HOST }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          script: |
+            cd ${{ secrets.PROJECT_PATH }}
+            git pull origin main
+            docker build -f Dockerfile.app -t texcompiler-app:latest .
+            docker stop texcompiler-app || true
+            docker rm texcompiler-app || true
+            docker run -d \
+              --name texcompiler-app \
+              -v ${{ secrets.MOUNT_STORAGE_DIR }} \
+              -v ${{ secrets.MOUNT_LOGS_DIR}} \
+              -p ${{ secrets.PORT_OUTER }}:${{ secrets.PORT_INNER }} \
+              texcompiler-app:latest
