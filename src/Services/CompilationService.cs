@@ -1,40 +1,46 @@
-﻿using System.Diagnostics;
-using System.IO;
+﻿using Microsoft.Extensions.Logging;
+using System.Data;
+using System.Diagnostics;
 using System.IO.Compression;
-using System.Text;
-using System.Threading.Tasks;
 using TexCompiler.Models;
+using TexCompiler.Services;
 
-public class CompilationService
+public class CompilationService : ICompilationService
 {
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<CompilationService> _logger;
+    private readonly string _logDir;
+    private readonly string _pdfDir;
 
     public CompilationService(IWebHostEnvironment environment, ILogger<CompilationService> logger)
     {
         _environment = environment;
         _logger = logger;
+        _logDir = Path.Combine(_environment.WebRootPath, "logs");
+        _pdfDir = Path.Combine(_environment.WebRootPath, "pdfs");
+
+        Directory.CreateDirectory(_logDir);
+        Directory.CreateDirectory(_pdfDir);
     }
 
     public async Task<CompilationResult> CompileAsync(CompilationTask task)
     {
-        var result = new CompilationResult();
         var startTime = DateTime.UtcNow;
 
         var tempDir = Path.Combine(Path.GetTempPath(), $"tex_compile_{Guid.NewGuid()}");
-        var logDir = Path.Combine(_environment.WebRootPath, "logs");
         Directory.CreateDirectory(tempDir);
-        Directory.CreateDirectory(logDir);
-        var originalFileName = Path.GetFileNameWithoutExtension(task.FileName);
 
+        var originalFileName = Path.GetFileNameWithoutExtension(task.SourceFile);
+
+        var mainTexFile = Path.GetFileName(task.SourceFile);
         try
         {
-            if (Path.GetExtension(task.FileName).ToLower() == ".zip")
+            if (Path.GetExtension(task.SourceFile).ToLower() == ".zip")
             {
-                await ExtractZipArchive(task.SourceFileFullPath, tempDir);
-                var mainTexFile = FindMainTexFile(tempDir);
+                ExtractZipArchive(task.SourceFile, tempDir);
+                mainTexFile = FindMainTexFile(tempDir);
 
-                if (mainTexFile == null)
+                if (string.IsNullOrEmpty(mainTexFile))
                 {
                     return new CompilationResult
                     {
@@ -43,25 +49,25 @@ public class CompilationService
                     };
 
                 }
-                task.FileName = Path.GetFileName(mainTexFile);
             }
             else
             {
-                File.Copy(task.SourceFileFullPath, Path.Combine(tempDir, task.FileName), true);
+                File.Copy(task.SourceFile, Path.Combine(tempDir, mainTexFile), true);
             }
 
 
 
             // Первая компиляция LaTeX
-            var latexArgs = $"-interaction=nonstopmode -shell-escape \"{task.FileName}\"";
+            var latexArgs = $"-interaction=nonstopmode -shell-escape \"{mainTexFile}\"";
             var latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
 
             if (!latexResult.Success)
             {
-                result.IsSuccess = false;
-                result.ErrorMessage = "LaTeX compilation failed";
-                await SaveLogToFile(result, task, logDir, tempDir);
-                return result;
+                return new CompilationResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "LaTeX compilation failed"
+                };
             }
 
             var asyFiles = Directory.GetFiles(tempDir, "*.asy");
@@ -75,77 +81,85 @@ public class CompilationService
             latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
             if (!latexResult.Success)
             {
-                result.IsSuccess = false;
-                result.ErrorMessage = "LaTeX compilation failed";
-                await SaveLogToFile(result, task, logDir, tempDir);
-                return result;
+                return new CompilationResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "LaTeX compilation failed"
+                };
             }
 
             // Параноидальная третья компиляция, чтобы точно создалось оглавление
             latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
             if (!latexResult.Success)
             {
-                result.IsSuccess = false;
-                result.ErrorMessage = "LaTeX compilation failed";
-                await SaveLogToFile(result, task, logDir, tempDir);
-                return result;
+                return new CompilationResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "LaTeX compilation failed"
+                };
             }
 
             // Проверяем, создался ли PDF
-            var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.FileName) + ".pdf");
+            var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
             if (File.Exists(pdfPath))
             {
-                // Исправляем имя файла: убираем .tex и добавляем .pdf
-                var outputPdfName = $"{originalFileName}.pdf";
-                task.FileName = outputPdfName;
-               
-                var outputPdfPath = Path.Combine(_environment.WebRootPath, "pdfs", outputPdfName);
+                var outputPdfName = Path.GetFileNameWithoutExtension(task.SourceFile) + ".pdf";
+                var outputPdfPath = Path.Combine(_pdfDir, outputPdfName);
 
-                Directory.CreateDirectory(Path.GetDirectoryName(outputPdfPath));
                 File.Copy(pdfPath, outputPdfPath, overwrite: true);
                 _logger.LogInformation("PDF successfully created: {OutputPath}", outputPdfPath);
 
-                result.IsSuccess = true;
-                result.FilePath = outputPdfPath;
-
+                return new CompilationResult
+                {
+                    IsSuccess = true,
+                    FilePath = _pdfDir,
+                    Duration = DateTime.UtcNow - startTime
+                };
             }
             else
             {
-                result.IsSuccess = false;
-                result.ErrorMessage = "PDF file was not generated";
+                return new CompilationResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "PDF file was not generated"
+                };
+
             }
         }
         catch (Exception ex)
         {
-            result.IsSuccess = false;
-            result.ErrorMessage = $"Compilation error: {ex.Message}";
-            await SaveLogToFile(result, task, logDir, tempDir);
             _logger.LogError(ex, "Compilation error for task {TaskId}", task.TaskId);
+            return new CompilationResult
+            {
+                IsSuccess = false,
+                ErrorMessage = $"Compilation error: {ex.Message}"
+            };
         }
         finally
         {
-            await SaveLogToFile(result, task, logDir, tempDir);
+            SaveLogToFile(task, _logDir, tempDir);
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
-
-        result.Duration = DateTime.UtcNow - startTime;
-        return result;
     }
 
     private string FindMainTexFile(string directory)
     {
         var texFiles = Directory.GetFiles(directory, "*.tex", SearchOption.AllDirectories);
 
+        if (texFiles.Length == 0) {
+            return string.Empty;
+        }
+
         // Приоритет: ищем файл с "main" в названии
         var mainFile = texFiles.FirstOrDefault(f =>
             Path.GetFileNameWithoutExtension(f).ToLower().Contains("main"));
 
         // Или берем первый .tex файл
-        return mainFile ?? texFiles.FirstOrDefault();
+        return mainFile ?? texFiles.First();
     }
 
-    private async Task ExtractZipArchive(string zipPath, string extractPath)
+    private void ExtractZipArchive(string zipPath, string extractPath)
     {
         using var archive = ZipFile.OpenRead(zipPath);
         foreach (var entry in archive.Entries)
@@ -275,20 +289,17 @@ public class CompilationService
         }
     }
 
-    private async Task SaveLogToFile(CompilationResult result, CompilationTask task, string logsDir, string tempDir)
+    private void SaveLogToFile(CompilationTask task, string logsDir, string tempDir)
     {
         try
         {
-            var logFilePath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.FileName) + ".log");
+            var logFilePath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.SourceFile) + ".log");
             if (File.Exists(logFilePath))
             {
-                var outputLogName = $"{Path.GetFileNameWithoutExtension(task.FileName)}.log";
-                var outputLogPath = Path.Combine(_environment.WebRootPath, "logs", outputLogName);
-
-                Directory.CreateDirectory(Path.GetDirectoryName(outputLogPath));
-                File.Copy(logFilePath, outputLogPath, overwrite: true);
-
-                result.LogFilePath = outputLogPath;
+                var outputLogName = $"{task.TaskId}.log";
+                var outputLogFilePath = Path.Combine(_logDir, outputLogName);
+                File.Copy(logFilePath, outputLogFilePath, overwrite: true);
+                task.LogFilePath = outputLogFilePath;
             }
         }
         catch (Exception ex)

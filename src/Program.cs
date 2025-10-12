@@ -6,7 +6,7 @@ builder.Services.AddControllersWithViews();
 
 builder.Services.AddSingleton<ITaskStorageService, TaskStorageService>();
 builder.Services.AddSingleton<CompilationManagerService>();
-builder.Services.AddSingleton<CompilationService>();
+builder.Services.AddSingleton<ICompilationService, CompilationService>();
 builder.Services.AddHostedService<CleanupService>();
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>

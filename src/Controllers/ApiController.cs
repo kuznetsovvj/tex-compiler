@@ -169,7 +169,7 @@ namespace TexCompiler.Controllers
 				}
 
 				var fileBytes = System.IO.File.ReadAllBytes(task.PdfFilePath);
-                var fileName = Path.GetFileNameWithoutExtension(task.FileName) + ".pdf";
+                var fileName = Path.GetFileNameWithoutExtension(task.SourceFile) + ".pdf";
 
                 return File(fileBytes, "application/pdf", fileName);
 			}
@@ -197,7 +197,7 @@ namespace TexCompiler.Controllers
                 }
 
                 var logBytes = System.IO.File.ReadAllBytes(task.LogFilePath);
-                var fileName = Path.GetFileNameWithoutExtension(task.FileName) + ".log";
+                var fileName = Path.GetFileNameWithoutExtension(task.SourceFile) + ".log";
 
                 return File(logBytes, "text/plain", fileName);
             }

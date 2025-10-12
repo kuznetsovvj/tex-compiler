@@ -10,9 +10,9 @@ namespace TexCompiler.Services
 	{
 		void AddTask(CompilationTask task);
 
-		CompilationTask GetTask(Guid taskId);
+		CompilationTask? GetTask(Guid taskId);
 
-		CompilationTask GetNextTask();
+		CompilationTask? GetNextTask();
 
 		void UpdateTask(CompilationTask task);
 
