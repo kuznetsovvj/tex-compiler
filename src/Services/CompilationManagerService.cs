@@ -5,16 +5,16 @@ namespace TexCompiler.Services
     public class CompilationManagerService
     {
         private readonly ITaskStorageService _taskStorage;
-        private readonly CompilationService _compilationService;
+        private readonly ICompilationService _compilationService;
         private readonly IWebHostEnvironment _environment;
         private readonly ILogger<CompilationManagerService> _logger;
-        private readonly object _processingLock = new object();
         private readonly string _storagePath;
-        private bool _isProcessing = false;
+        private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
+
 
         public CompilationManagerService(
             ITaskStorageService taskStorage,
-            CompilationService compilationService,
+            ICompilationService compilationService,
             IWebHostEnvironment environment,
             ILogger<CompilationManagerService> logger)
         {
@@ -34,24 +34,14 @@ namespace TexCompiler.Services
         {
             try
             {
-                var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
-                var safeFileName = Path.GetFileNameWithoutExtension(file.FileName)
-                    .Replace(" ", "_")
-                    .Replace("/", "_")
-                    .Replace("\\", "_");
-
-                var safeFileExt = Path.GetExtension(file.FileName);
-
-                var fileName = $"{timestamp}_{safeFileName}" + safeFileExt;
-
-                var filePath = Path.Combine(_storagePath, fileName);
+                var filePath = GenerateFilePath(file.FileName);
 
                 using (var stream = new FileStream(filePath, FileMode.Create))
                 {
                     await file.CopyToAsync(stream);
                 }
 
-                var task = new CompilationTask(fileName, filePath);
+                var task = new CompilationTask(filePath);
 
                 _taskStorage.AddTask(task);
 
@@ -66,11 +56,25 @@ namespace TexCompiler.Services
             }
         }
 
+        private string GenerateFilePath(string sourceFileName)
+        {
+            var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+            var safeFileName = Path.GetFileNameWithoutExtension(sourceFileName)
+                .Replace(" ", "_")
+                .Replace("/", "_")
+                .Replace("\\", "_");
+
+            var fileName = $"{timestamp}_{safeFileName}" + Path.GetExtension(sourceFileName);
+            var filePath = Path.Combine(_storagePath, fileName);
+
+            return filePath;
+        }
+
 
         /// <summary>
         /// Получает статус задачи по ID
         /// </summary>
-        public CompilationTask GetTaskStatus(Guid taskId)
+        public CompilationTask? GetTaskStatus(Guid taskId)
         {
             return _taskStorage.GetTask(taskId);
         }
@@ -78,14 +82,18 @@ namespace TexCompiler.Services
         /// <summary>
         /// Запускает обработку очереди если она не активна
         /// </summary>
-        private void StartProcessingIfNeeded()
+        private async Task StartProcessingIfNeeded()
         {
-            lock (_processingLock)
+            if (await _semaphore.WaitAsync(0))
             {
-                if (!_isProcessing)
+                try
                 {
-                    _isProcessing = true;
-                    _ = Task.Run(ProcessQueueAsync);
+                    await ProcessQueueAsync();
+                }
+                catch
+                {
+                    _semaphore.Release();
+                    throw;
                 }
             }
         }
@@ -115,10 +123,7 @@ namespace TexCompiler.Services
             }
             finally
             {
-                lock (_processingLock)
-                {
-                    _isProcessing = false;
-                }
+                _semaphore.Release();
                 _logger.LogInformation("Queue processing completed");
             }
         }
@@ -132,35 +137,19 @@ namespace TexCompiler.Services
 
             try
             {
-                task.TaskStatus = CompilationTaskStatus.Processing;
-                task.StartedAt = DateTime.UtcNow;
-                _taskStorage.UpdateTask(task);
+                _taskStorage.UpdateTask(task.SetProcessing());
 
                 var result = await _compilationService.CompileAsync(task);
 
-                task.TaskStatus = result.IsSuccess ?
-                    CompilationTaskStatus.Completed :
-                    CompilationTaskStatus.Failed;
-
-                task.CompletedAt = DateTime.UtcNow;
-                task.PdfFilePath = result.FilePath;
-                task.LogFilePath = result.LogFilePath;
-                task.ErrorMessage = result.ErrorMessage;
-
-                _taskStorage.UpdateTask(task);
-
+                _taskStorage.UpdateTask(task.SetCompleted(result));
                 _logger.LogInformation("Task {TaskId} completed with status: {Status}",
                     task.TaskId, task.TaskStatus);
             }
             catch (Exception ex)
             {
+                _taskStorage.UpdateTask(task.SetFailed(ex));
                 _logger.LogError(ex, "Error processing task: {TaskId}", task.TaskId);
-
-                // Обновляем задачу с информацией об ошибке
-                task.TaskStatus = CompilationTaskStatus.Failed;
-                task.CompletedAt = DateTime.UtcNow;
-                task.ErrorMessage = $"Internal error: {ex.Message}";
-                _taskStorage.UpdateTask(task);
+              
             }
         }
     }

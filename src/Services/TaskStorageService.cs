@@ -25,7 +25,7 @@ namespace TexCompiler.Services
         /// <summary>
         /// Получает следующую задачу из очереди (удаляя ее)
         /// </summary>
-        public CompilationTask GetNextTask()
+        public CompilationTask? GetNextTask()
         {
             if (_taskQueue.TryDequeue(out var task))
             {
@@ -38,7 +38,7 @@ namespace TexCompiler.Services
         /// <summary>
         /// Получает задачу по ID без удаления из очереди
         /// </summary>
-        public CompilationTask GetTask(Guid taskId)
+        public CompilationTask? GetTask(Guid taskId)
         {
             _taskDictionary.TryGetValue(taskId, out var task);
             return task;

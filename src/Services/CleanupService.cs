@@ -44,7 +44,7 @@
             {
                 try
                 {
-                    await PerformFullCleanup();
+                    PerformFullCleanup();
                 }
                 catch (Exception ex)
                 {
@@ -58,16 +58,14 @@
         /// <summary>
         /// Выполняет очистку: временные директории, PDF, таски в очередях
         /// </summary>
-        public async Task PerformFullCleanup()
+        public void PerformFullCleanup()
         {
 
             try
             {
-                var tempDirsCleaned = await CleanupTempDirectories();
-
-                var pdfFilesCleaned = await CleanupOldPdfFiles();
-
-                var tasksCleaned = CleanupOldTasks();
+                CleanupTempDirectories();
+                CleanupOldPdfFiles();
+                CleanupOldTasks();
 
             }
             catch (Exception ex)
@@ -80,7 +78,7 @@
         /// <summary>
         /// Очищает временные директории компиляции
         /// </summary>
-        private async Task<int> CleanupTempDirectories()
+        private int CleanupTempDirectories()
         {
             try
             {
@@ -128,7 +126,7 @@
         /// <summary>
         /// Очищает старые PDF файлы
         /// </summary>
-        private async Task<int> CleanupOldPdfFiles()
+        private int CleanupOldPdfFiles()
         {
             try
             {
@@ -188,6 +186,7 @@
 
                 var oldTasks = allTasks
                     .Where(task => task.CreatedAt < cutoffTime)
+                    .Where(task => task.TaskStatus == Models.CompilationTaskStatus.Completed || task.TaskStatus == Models.CompilationTaskStatus.Failed)
                     .ToList();
 
                 var removedCount = 0;
@@ -264,15 +263,6 @@
                 _logger.LogDebug(ex, "Error checking if PDF file is referenced: {File}", pdfFilePath);
                 return true; // В случае ошибки лучше не удалять файл
             }
-        }
-
-        /// <summary>
-        /// Принудительная очистка (можно вызывать извне)
-        /// </summary>
-        public async Task ForceCleanupAsync()
-        {
-            _logger.LogInformation("Forced unified cleanup triggered");
-            await PerformFullCleanup();
         }
     }
 }
