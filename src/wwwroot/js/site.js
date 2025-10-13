@@ -209,6 +209,7 @@
         const downloadLink = document.getElementById('downloadLink');
         const downloadLogLink = document.getElementById('downloadLogLink');
         const fileInfo = document.getElementById('fileInfo');
+        const queueInfo = document.getElementById('queueInfo'); // новый элемент
 
         console.log('FileInfo element:', fileInfo);
 
@@ -221,6 +222,7 @@
         if (successArea) successArea.style.display = 'none';
         if (errorArea) errorArea.style.display = 'none';
         if (errorMessage) errorMessage.style.display = 'none';
+        if (queueInfo) queueInfo.style.display = 'none';
 
         // Функция для отображения длительности
         const displayDuration = (prefix) => {
@@ -239,12 +241,25 @@
             }
         };
 
+        // Функция для отображения позиции в очереди (ТОЛЬКО для Queued)
+        const displayQueuePosition = () => {
+            if (queueInfo && status.queuePosition !== undefined) {
+                if (status.queuePosition >= 1) { // показываем только если не первый
+                    queueInfo.textContent = `📍 Позиция в очереди: ${status.queuePosition}`;
+                    queueInfo.style.display = 'block';
+                } else {
+                    queueInfo.style.display = 'none';
+                }
+            }
+        };
+
         switch (status.status) {
             case 'Queued':
                 progressBar.style.width = '20%';
                 progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-info';
                 statusMessage.textContent = 'В очереди на обработку...';
                 displayDuration('В очереди');
+                displayQueuePosition(); // показываем очередь только здесь
                 break;
 
             case 'Processing':
@@ -252,6 +267,7 @@
                 progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
                 statusMessage.textContent = 'Идет компиляция...';
                 displayDuration('Обрабатывается');
+                // НЕ показываем очередь в Processing
                 break;
 
             case 'Completed':
