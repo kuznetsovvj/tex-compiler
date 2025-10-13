@@ -15,11 +15,14 @@ jobs:
         with:
           dotnet-version: 8.0.x
           
-      - name: Restore dependencies
-        run: dotnet restore
-        
+      - name: Restore dependencies for main project
+        run: dotnet restore ./src/  
+          
+      - name: Restore dependencies for tests
+        run: dotnet restore ./TexCompiler.Test/  
+          
       - name: Run tests
-        run: dotnet test --verbosity normal --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test ./TexCompiler.Test/ --verbosity normal --logger "trx;LogFileName=test-results.trx"
         
       - name: Upload test results
         uses: actions/upload-artifact@v4
