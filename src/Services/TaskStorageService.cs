@@ -68,5 +68,16 @@ namespace TexCompiler.Services
         {
             return _taskDictionary.TryRemove(taskId, out _);
         }
+
+        public int GetQueuePosition(Guid taskId)
+        {
+            var queuedTasks = _taskDictionary.Values
+                .Where(t => t.TaskStatus == CompilationTaskStatus.Queued)
+                .OrderBy(t => t.CreatedAt)
+                .ToList();
+
+            return queuedTasks.FindIndex(t => t.TaskId == taskId) + 1;
+
+        }
     }
 }

@@ -29,6 +29,8 @@
 		public string? ErrorMessage { get; set; }
 
 		public string? DownloadUrl { get; set; }
+
+		public int? QueuePosition { get; set; }
 	}
 
 	public class UploadResponse

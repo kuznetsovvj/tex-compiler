@@ -123,6 +123,11 @@ namespace TexCompiler.Controllers
 					ErrorMessage = task.ErrorMessage
 				};
 
+				if (task.TaskStatus == CompilationTaskStatus.Queued)
+				{
+					response.QueuePosition = _taskStorageService.GetQueuePosition(taskId);
+				}
+
 				if (task.TaskStatus == CompilationTaskStatus.Completed && !string.IsNullOrEmpty(task.PdfFilePath))
 				{
 					response.DownloadUrl = Url.Action("Download", "Api", new { taskId = task.TaskId }, Request.Scheme);

@@ -20,5 +20,7 @@ namespace TexCompiler.Services
 
         bool TryRemoveTask(Guid taskId);
 
+		int GetQueuePosition(Guid taskId);
+
     }
 }

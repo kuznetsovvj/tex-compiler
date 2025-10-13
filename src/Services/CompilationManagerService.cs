@@ -92,8 +92,11 @@ namespace TexCompiler.Services
                 }
                 catch
                 {
-                    _semaphore.Release();
                     throw;
+                }
+                finally
+                {
+                    _semaphore.Release();
                 }
             }
         }
@@ -123,7 +126,6 @@ namespace TexCompiler.Services
             }
             finally
             {
-                _semaphore.Release();
                 _logger.LogInformation("Queue processing completed");
             }
         }
