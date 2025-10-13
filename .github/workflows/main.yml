@@ -3,9 +3,13 @@ on:
   push:
     branches: [main]
 
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      ASPNETCORE_ENVIRONMENT: Test
+      TEMP: /tmp/test-temp  
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -15,14 +19,26 @@ jobs:
         with:
           dotnet-version: 8.0.x
           
+      - name: Create test directories
+        run: |
+          mkdir -p /tmp/test-temp
+          mkdir -p /tmp/test-storage
+          mkdir -p /tmp/test-logs
+          chmod 777 /tmp/test-temp /tmp/test-storage /tmp/test-logs
+          
       - name: Restore dependencies for main project
-        run: dotnet restore ./src/  
+        run: dotnet restore ./src/
           
       - name: Restore dependencies for tests
-        run: dotnet restore ./TexCompiler.Test/  
+        run: dotnet restore ./TexCompiler.Test/
           
-      - name: Run tests
-        run: dotnet test ./TexCompiler.Test/ --verbosity normal --logger "trx;LogFileName=test-results.trx"
+      - name: Run tests with environment variables
+        run: |
+          export TEMP=/tmp/test-temp
+          export ASPNETCORE_ENVIRONMENT=Test
+          export TEST_STORAGE_PATH=/tmp/test-storage
+          export TEST_LOGS_PATH=/tmp/test-logs
+          dotnet test ./TexCompiler.Test/ --verbosity normal --logger "trx;LogFileName=test-results.trx"
         
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -30,6 +46,13 @@ jobs:
         with:
           name: test-results
           path: "**/*test-results*.trx"
+
+      - name: Cleanup test directories
+        if: always()
+        run: |
+          rm -rf /tmp/test-temp
+          rm -rf /tmp/test-storage  
+          rm -rf /tmp/test-logs
 
   deploy:
     runs-on: ubuntu-latest
