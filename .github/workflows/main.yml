@@ -3,11 +3,9 @@ on:
   push:
     branches: [main]
 
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    needs: test  
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
