@@ -16,10 +16,10 @@ jobs:
           dotnet-version: 8.0.x
           
       - name: Restore dependencies for main project
-        run: dotnet restore ./src/  # восстанавливаем из папки src
+        run: dotnet restore ./src/  
           
       - name: Restore dependencies for tests
-        run: dotnet restore ./TexCompiler.Test/  # восстанавливаем тесты
+        run: dotnet restore ./TexCompiler.Test/  
           
       - name: Run tests
         run: dotnet test ./TexCompiler.Test/ --verbosity normal --logger "trx;LogFileName=test-results.trx"
