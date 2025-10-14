@@ -112,7 +112,7 @@ public class CompilationService : ICompilationService
                 return new CompilationResult
                 {
                     IsSuccess = true,
-                    FilePath = _pdfDir,
+                    FilePath = outputPdfPath,
                     Duration = DateTime.UtcNow - startTime
                 };
             }
