@@ -1,0 +1,25 @@
+name: Test Pipeline
+on:
+  push:
+    branches-ignore: [main]  
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
+          
+      - name: Build and test
+        run: |
+          dotnet restore ./src/
+          dotnet build ./src/ --configuration Release --no-restore
+          dotnet test ./TexCompiler.Test/ --verbosity normal --logger "console"
