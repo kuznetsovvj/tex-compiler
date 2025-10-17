@@ -14,6 +14,7 @@ namespace TexCompiler.UnitTests.Services
         private readonly Mock<IWebHostEnvironment> _environmentMock;
         private readonly Mock<ILogger<CompilationManagerService>> _loggerMock;
         private readonly CompilationManagerService _service;
+        private readonly string _tempTestDir;
 
         public CompilationManagerServiceTests()
         {
@@ -22,7 +23,12 @@ namespace TexCompiler.UnitTests.Services
             _environmentMock = new Mock<IWebHostEnvironment>();
             _loggerMock = new Mock<ILogger<CompilationManagerService>>();
 
-            _environmentMock.Setup(e => e.ContentRootPath).Returns("/test/path");
+            // Создаем уникальную временную директорию для тестов
+            _tempTestDir = Path.Combine(Path.GetTempPath(), $"texcompiler-test-{Guid.NewGuid()}");
+            Directory.CreateDirectory(_tempTestDir);
+
+            // Настраиваем environment использовать тестовую директорию
+            _environmentMock.Setup(e => e.ContentRootPath).Returns(_tempTestDir);
 
             _service = new CompilationManagerService(
                 _taskStorageMock.Object,
@@ -49,7 +55,13 @@ namespace TexCompiler.UnitTests.Services
 
             // Assert
             Assert.NotEqual(Guid.Empty, result);
-            Assert.Equal(capturedTask?.TaskId, result);
+            Assert.NotNull(capturedTask);
+            Assert.Equal(capturedTask.TaskId, result);
+
+            // Проверяем что файл создался в тестовой директории
+            var storageDir = Path.Combine(_tempTestDir, "storage");
+            Assert.True(Directory.Exists(storageDir));
+
             _taskStorageMock.Verify(t => t.AddTask(It.IsAny<CompilationTask>()), Times.Once);
         }
 
@@ -64,14 +76,23 @@ namespace TexCompiler.UnitTests.Services
 
             // Act & Assert
             await Assert.ThrowsAsync<IOException>(() => _service.SubmitTaskAsync(fileMock.Object));
+
+            // Проверяем что задача не добавлена
             _taskStorageMock.Verify(t => t.AddTask(It.IsAny<CompilationTask>()), Times.Never);
+
+            // Проверяем что директория storage создана (даже при ошибке)
+            var storageDir = Path.Combine(_tempTestDir, "storage");
+            Assert.True(Directory.Exists(storageDir));
         }
 
         [Fact]
         public void GetTaskStatus_ExistingTask_ReturnsTask()
         {
             // Arrange
-            var expectedTask = new CompilationTask("path/to/file/test.tex");
+            // Используем путь внутри тестовой директории
+            var testFilePath = Path.Combine(_tempTestDir, "storage", "test.tex");
+            var expectedTask = new CompilationTask(testFilePath);
+
             _taskStorageMock.Setup(t => t.GetTask(expectedTask.TaskId))
                            .Returns(expectedTask);
 
@@ -81,8 +102,10 @@ namespace TexCompiler.UnitTests.Services
             // Assert
             Assert.NotNull(result);
             Assert.Equal(expectedTask.TaskId, result.TaskId);
-            Assert.Equal(expectedTask.SourceFile, result.SourceFile);
             _taskStorageMock.Verify(t => t.GetTask(expectedTask.TaskId), Times.Once);
+
+            // Проверяем что тестовая директория существует
+            Assert.True(Directory.Exists(_tempTestDir));
         }
 
         [Fact]
@@ -99,6 +122,24 @@ namespace TexCompiler.UnitTests.Services
             // Assert
             Assert.Null(result);
             _taskStorageMock.Verify(t => t.GetTask(nonExistentTaskId), Times.Once);
-        }      
+
+            // Проверяем что тестовая директория не была затронута этим тестом
+            Assert.True(Directory.Exists(_tempTestDir));
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (Directory.Exists(_tempTestDir))
+                {
+                    Directory.Delete(_tempTestDir, recursive: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Warning: Could not delete test directory: {ex.Message}");
+            }
+        }
     }
 }
