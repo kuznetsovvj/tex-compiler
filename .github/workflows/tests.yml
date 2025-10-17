@@ -1,0 +1,37 @@
+name: Test Pipeline
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      TEMP: /tmp  # Убедитесь что используется /tmp
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 8.0.x
+          
+      - name: Restore dependencies
+        run: |
+          dotnet restore ./src/
+          dotnet restore ./TexCompiler.Test/
+          
+      - name: Run tests with temp directory
+        run: |
+          # Убедимся что /tmp доступен для записи
+          mkdir -p /tmp/test-runs
+          chmod 777 /tmp/test-runs
+          
+          dotnet test ./TexCompiler.Test/ --verbosity normal --logger "console"
+        
+      - name: Cleanup temp files
+        if: always()
+        run: |
+          rm -rf /tmp/texcompiler-test-*
