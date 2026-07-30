@@ -429,6 +429,15 @@
 // Инициализация при загрузке страницы
 console.log('Document loading...');
 document.addEventListener('DOMContentLoaded', () => {
+    // Страховка от повторной инициализации. Скрипт уже был однажды подключён на
+    // странице дважды, и тогда создавалось два экземпляра TexCompiler: каждый вешал
+    // свой обработчик submit, и один клик отправлял на сервер две задачи.
+    if (window.__texCompilerInitialized) {
+        console.warn('TexCompiler already initialized, skipping duplicate initialization');
+        return;
+    }
+    window.__texCompilerInitialized = true;
+
     console.log('DOM fully loaded, initializing TexCompiler...');
     try {
         new TexCompiler();
@@ -436,9 +445,4 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
         console.error('Failed to initialize TexCompiler:', error);
     }
-});
-
-// Также инициализируем при полной загрузке страницы (на всякий случай)
-window.addEventListener('load', () => {
-    console.log('Window fully loaded');
 });
