@@ -35,7 +35,10 @@ public class CompilationService : ICompilationService
         var mainTexFile = Path.GetFileName(task.SourceFile);
         try
         {
-            if (Path.GetExtension(task.SourceFile).ToLower() == ".zip")
+            // Тип определяется по содержимому, а не по расширению: расширение — это
+            // строка, которую прислал клиент, и архив под именем .tex уходил в pdflatex
+            // как исходник.
+            if (ArchiveDetector.IsZipArchive(task.SourceFile))
             {
                 ExtractZipArchive(task.SourceFile, tempDir);
                 mainTexFile = FindMainTexFile(tempDir);
@@ -49,6 +52,16 @@ public class CompilationService : ICompilationService
                     };
 
                 }
+            }
+            else if (Path.GetExtension(task.SourceFile).Equals(".zip", StringComparison.OrdinalIgnoreCase))
+            {
+                // Раньше такой файл падал внутри ZipFile.OpenRead, а пользователь видел
+                // «Compilation error: …» — сообщение про сбой сервиса, а не про свой файл.
+                return new CompilationResult
+                {
+                    IsSuccess = false,
+                    ErrorMessage = "Файл с расширением .zip не является архивом. Проверьте, что архив не повреждён."
+                };
             }
             else
             {
