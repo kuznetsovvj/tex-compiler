@@ -173,6 +173,19 @@
             console.log('Status response - Status:', response.status, 'OK:', response.ok);
 
             if (!response.ok) {
+                // 404 значит, что задачи больше нет в памяти сервиса: состояние живёт
+                // только в процессе, поэтому перезапуск — в том числе штатный, при каждом
+                // деплое — стирает её. Раньше это попадало в общий catch и показывалось
+                // как ошибка сети, хотя сеть в порядке, и пользователь не понимал,
+                // что делать.
+                if (response.status === 404) {
+                    console.warn('Task not found — the service was probably restarted');
+                    this.showError('Задача не найдена — вероятно, сервис перезапускался. Отправьте файл заново.');
+                    clearInterval(this.statusInterval);
+                    this.statusInterval = null;
+                    return;
+                }
+
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
