@@ -74,6 +74,14 @@
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error('HTTP error details:', errorText);
+
+                // Сервер обрывает приём тела на превышении лимита и отвечает голым 413,
+                // без тела с объяснением: сообщение приходится собирать здесь.
+                if (response.status === 413) {
+                    this.showError('Файл слишком большой: сервер прервал загрузку, не приняв его целиком');
+                    return;
+                }
+
                 throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`);
             }
 
