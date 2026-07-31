@@ -1,184 +1,339 @@
-﻿class TexCompiler {
-    constructor() {
+/* ============================================================================
+   TexCompiler — интерфейс страницы компиляции.
+
+   Контракт с сервером не менялся: POST /api/upload отдаёт { success, data.taskId },
+   GET /api/status/{id} — { success, data: { status, duration, queuePosition,
+   downloadUrl, errorMessage } }, а PDF и лог забираются с /api/download/{id}
+   и /api/download-log/{id}.
+
+   Видимость областей переключается атрибутом hidden, а не инлайновым style.display:
+   состояние элемента тогда видно в разметке, и CSS не приходится перебивать
+   инлайновыми правилами.
+   ========================================================================= */
+
+const THEME_STORAGE_KEY = 'tex-compiler-theme';
+const POLL_INTERVAL_MS = 5000;
+const ALLOWED_EXTENSIONS = ['.tex', '.zip'];
+
+/**
+ * Ширина полосы прогресса по состоянию задачи. Реального процента у компиляции нет:
+ * pdflatex не сообщает о продвижении, поэтому значения обозначают этап, а не долю
+ * сделанной работы. Движение внутри этапа отдано бегущим полосам в CSS.
+ */
+const PROGRESS_BY_STATE = {
+    uploading: 12,
+    Queued: 30,
+    Processing: 65,
+    Completed: 100,
+    Failed: 100
+};
+
+/** Состояния трёх шагов: очередь, компиляция, готово. */
+const STEPS_BY_STATE = {
+    uploading: ['active', 'pending', 'pending'],
+    Queued: ['active', 'pending', 'pending'],
+    Processing: ['done', 'active', 'pending'],
+    Completed: ['done', 'done', 'done'],
+    Failed: ['done', 'failed', 'pending']
+};
+
+function setVisible (element, visible) {
+    if (element) {
+        element.hidden = !visible;
+    }
+}
+
+function formatFileSize (bytes) {
+    if (bytes >= 1024 * 1024) {
+        return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+    }
+
+    return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
+}
+
+class TexCompiler {
+    constructor () {
         this.currentTaskId = null;
         this.statusInterval = null;
-        console.log('TexCompiler class initialized');
-        this.initializeEventListeners();
+
+        // Источник истины о выбранном файле — это поле, а не input.files: файл может
+        // прийти перетаскиванием, а записать его в input.files умеют не все браузеры.
+        this.selectedFile = null;
+
+        this.elements = {
+            form: document.getElementById('uploadForm'),
+            fileInput: document.getElementById('texFile'),
+            dropZone: document.getElementById('dropZone'),
+            dropZoneIdle: document.getElementById('dropZoneIdle'),
+            dropZoneFile: document.getElementById('dropZoneFile'),
+            selectedFileName: document.getElementById('selectedFileName'),
+            selectedFileSize: document.getElementById('selectedFileSize'),
+            clearFileButton: document.getElementById('clearFileButton'),
+            compileButton: document.getElementById('compileButton'),
+            compileButtonIcon: document.getElementById('compileButtonIcon'),
+            compileButtonLabel: document.getElementById('compileButtonLabel'),
+            formError: document.getElementById('formError'),
+
+            statusArea: document.getElementById('statusArea'),
+            taskIdLabel: document.getElementById('taskIdLabel'),
+            steps: document.getElementById('steps'),
+            progressBar: document.getElementById('progressBar'),
+            statusMessage: document.getElementById('statusMessage'),
+            statusText: document.getElementById('statusText'),
+            fileInfo: document.getElementById('fileInfo'),
+            queueInfo: document.getElementById('queueInfo'),
+
+            // errorMessage — плашка в панели статуса: сеть, пропавшая задача. Причина
+            // неудачной компиляции идёт в compileErrorText внутри errorArea. Раньше
+            // оба элемента назывались errorMessage, и getElementById возвращал первый,
+            // из-за чего второй всегда оставался пустым.
+            errorMessage: document.getElementById('errorMessage'),
+            successArea: document.getElementById('successArea'),
+            errorArea: document.getElementById('errorArea'),
+            compileErrorText: document.getElementById('compileErrorText'),
+            downloadLink: document.getElementById('downloadLink'),
+            downloadLogLink: document.getElementById('downloadLogLink'),
+            resetButton: document.getElementById('resetButton')
+        };
+
+        this.maxFileSizeMegabytes = Number(this.elements.dropZone?.dataset.maxSizeMb) || 20;
+
+        this.bindEvents();
     }
 
-    initializeEventListeners() {
-        const uploadForm = document.getElementById('uploadForm');
-        const fileInput = document.getElementById('texFile');
+    bindEvents () {
+        const { form, fileInput, dropZone, clearFileButton, resetButton, downloadLogLink } = this.elements;
 
-        console.log('Initializing event listeners...');
-        console.log('Upload form found:', !!uploadForm);
-        console.log('File input found:', !!fileInput);
-
-        if (uploadForm) {
-            uploadForm.addEventListener('submit', (e) => this.handleUpload(e));
-            console.log('Submit event listener attached');
-        } else {
-            console.error('Upload form not found! Check HTML structure');
-        }
-
-        if (fileInput) {
-            fileInput.addEventListener('change', (e) => {
-                console.log('File selected:', e.target.files[0]?.name);
-            });
-        }
-    }
-
-    async handleUpload(event) {
-        event.preventDefault();
-        console.log('=== UPLOAD STARTED ===');
-
-        const fileInput = document.getElementById('texFile');
-        const compileButton = document.getElementById('compileButton');
-
-        if (!fileInput || !fileInput.files.length) {
-            console.error('No file input or no files selected');
-            this.showError('Пожалуйста, выберите файл');
+        if (!form || !fileInput || !dropZone) {
+            console.error('TexCompiler: разметка страницы компиляции не найдена');
             return;
         }
 
-        const file = fileInput.files[0];
-        console.log('Processing file:', file.name, 'Size:', file.size, 'Type:', file.type);
+        form.addEventListener('submit', (event) => this.handleUpload(event));
+        fileInput.addEventListener('change', () => this.selectFile(fileInput.files[0] || null));
 
-        // Валидация файла
-        const validExtensions = ['.tex', '.zip']
-        const fileExt = file.name.toLowerCase();
-        if (!validExtensions.some(ext => fileExt.endsWith(ext))) {
-            this.showError('Разрешены только файлы .tex или .zip');
+        clearFileButton?.addEventListener('click', () => this.selectFile(null));
+        resetButton?.addEventListener('click', () => this.reset());
+        downloadLogLink?.addEventListener('click', () => this.downloadLog(this.currentTaskId));
+
+        this.bindDragAndDrop(dropZone);
+    }
+
+    bindDragAndDrop (dropZone) {
+        // Без preventDefault на dragover браузер не считает элемент приёмником и drop
+        // до него не доходит.
+        dropZone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            dropZone.classList.add('is-dragover');
+        });
+
+        // dragleave приходит и при переходе курсора на вложенный элемент: подсветку
+        // снимаем только когда курсор действительно вышел за пределы зоны.
+        dropZone.addEventListener('dragleave', (event) => {
+            if (!dropZone.contains(event.relatedTarget)) {
+                dropZone.classList.remove('is-dragover');
+            }
+        });
+
+        dropZone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            dropZone.classList.remove('is-dragover');
+            this.selectFile(event.dataTransfer?.files[0] || null);
+        });
+
+        // Файл, отпущенный мимо зоны, браузер по умолчанию открывает вместо страницы,
+        // и незакончённая работа теряется.
+        window.addEventListener('dragover', (event) => event.preventDefault());
+        window.addEventListener('drop', (event) => event.preventDefault());
+    }
+
+    selectFile (file) {
+        const { fileInput, dropZone, dropZoneIdle, dropZoneFile, selectedFileName, selectedFileSize } = this.elements;
+
+        this.selectedFile = file;
+        this.hideFormError();
+
+        if (!file) {
+            // Сброс value обязателен: иначе повторный выбор того же файла не вызовет
+            // событие change, и зона останется пустой.
+            fileInput.value = '';
+            dropZone.classList.remove('has-file');
+            setVisible(dropZoneIdle, true);
+            setVisible(dropZoneFile, false);
+            return;
+        }
+
+        selectedFileName.textContent = file.name;
+        selectedFileSize.textContent = formatFileSize(file.size);
+        dropZone.classList.add('has-file');
+        setVisible(dropZoneIdle, false);
+        setVisible(dropZoneFile, true);
+    }
+
+    /** @returns {string|null} причина отказа или null, если файл подходит */
+    validateFile (file) {
+        const name = file.name.toLowerCase();
+
+        if (!ALLOWED_EXTENSIONS.some((extension) => name.endsWith(extension))) {
+            return `Разрешены только файлы ${ALLOWED_EXTENSIONS.join(' и ')}`;
+        }
+
+        // Проверка до отправки: сервер тот же файл отвергнет, но только после того,
+        // как примет его целиком.
+        if (file.size > this.maxFileSizeMegabytes * 1024 * 1024) {
+            return `Файл занимает ${formatFileSize(file.size)}, а сервис принимает до ${this.maxFileSizeMegabytes} МБ`;
+        }
+
+        return null;
+    }
+
+    async handleUpload (event) {
+        event.preventDefault();
+
+        if (!this.selectedFile) {
+            this.showFormError('Выберите файл для компиляции');
+            return;
+        }
+
+        const validationError = this.validateFile(this.selectedFile);
+        if (validationError) {
+            this.showFormError(validationError);
             return;
         }
 
         const formData = new FormData();
-        formData.append('texFile', file);
-        console.log('FormData created, entries:', formData.get('texFile')?.name || 'no file');
+        formData.append('texFile', this.selectedFile);
+
+        this.hideFormError();
+        this.setBusy(true);
+        this.showStatusArea();
 
         try {
-            // Показываем индикатор загрузки
-            compileButton.disabled = true;
-            compileButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Загрузка...';
-            console.log('Button state updated');
-
-            console.log('Sending request to /api/upload...');
-
             const response = await fetch('/api/upload', {
                 method: 'POST',
                 body: formData
             });
 
-            console.log('Response received. Status:', response.status, 'OK:', response.ok);
-
             if (!response.ok) {
-                const errorText = await response.text();
-                console.error('HTTP error details:', errorText);
-
                 // Сервер обрывает приём тела на превышении лимита и отвечает голым 413,
                 // без тела с объяснением: сообщение приходится собирать здесь.
                 if (response.status === 413) {
-                    this.showError('Файл слишком большой: сервер прервал загрузку, не приняв его целиком');
+                    this.failBeforeTask('Файл слишком большой: сервер прервал загрузку, не приняв его целиком');
                     return;
                 }
 
-                throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`);
+                // Отказ валидации приходит с кодом 400 и телом той же формы
+                // { success, error }, что и успешный ответ, — там лежит объяснение
+                // на русском, и показать нужно именно его, а не код ответа.
+                const serverMessage = await this.readErrorMessage(response);
+
+                console.error('Upload rejected:', response.status, serverMessage);
+                this.failBeforeTask(serverMessage || `Сервер отклонил загрузку (HTTP ${response.status})`);
+                return;
             }
 
             const result = await response.json();
-            console.log('Full API Response:', JSON.stringify(result, null, 2));
 
-            // ДЕТАЛЬНАЯ ПРОВЕРКА СТРУКТУРЫ ОТВЕТА
-            if (result && result.success) {
-                if (result.data && result.data.taskId) {
-                    this.currentTaskId = result.data.taskId;
-                    console.log('Task created with ID:', this.currentTaskId);
-                    this.showStatusArea();
-                    this.startStatusPolling();
-                } else {
-                    console.error('Task ID missing in response data:', result.data);
-                    this.showError('Сервер не вернул идентификатор задачи');
-                }
-            } else {
-                console.error('API returned unsuccessful or invalid structure:', result);
-                const errorMsg = result?.error || result?.message || 'Неизвестная ошибка сервера';
-                this.showError('Ошибка при загрузке файла: ' + errorMsg);
+            if (!result?.success) {
+                this.failBeforeTask(result?.error || result?.message || 'Сервер отклонил загрузку без объяснения причины');
+                return;
             }
+
+            if (!result.data?.taskId) {
+                console.error('Task ID missing in response data:', result.data);
+                this.failBeforeTask('Сервер не вернул идентификатор задачи');
+                return;
+            }
+
+            this.currentTaskId = result.data.taskId;
+            this.elements.taskIdLabel.textContent = this.currentTaskId;
+            this.startStatusPolling();
         } catch (error) {
             console.error('Upload failed with error:', error);
-            this.showError('Ошибка сети при загрузке файла: ' + error.message);
+            this.failBeforeTask(`Не удалось отправить файл: ${error.message}`);
         } finally {
-            compileButton.disabled = false;
-            compileButton.innerHTML = '<i class="fas fa-compress-arrows-alt"></i> Скомпилировать';
-            console.log('Button state reset');
+            this.setBusy(false);
         }
     }
 
-    showStatusArea() {
-        const statusArea = document.getElementById('statusArea');
-        if (!statusArea) {
-            console.error('Status area element not found!');
-            return;
+    /** @returns {Promise<string|null>} объяснение отказа из тела ответа, если оно там есть */
+    async readErrorMessage (response) {
+        try {
+            const body = await response.json();
+
+            return body?.error || body?.message || null;
+        } catch (error) {
+            // Тела нет или это не JSON — например, страница ошибки от прокси.
+            return null;
         }
+    }
 
-        statusArea.style.display = 'block';
-        document.getElementById('progressBar').style.width = '10%';
-        document.getElementById('statusMessage').textContent = 'Файл загружен, ожидание в очереди...';
+    /**
+     * Отказ до того, как задача появилась: панель статуса ещё ничего не показывает,
+     * поэтому она закрывается, а причина остаётся у зоны выбора файла.
+     */
+    failBeforeTask (message) {
+        setVisible(this.elements.statusArea, false);
+        this.showFormError(message);
+    }
 
-        // Скрываем области успеха и ошибки при новом запуске
+    setBusy (busy) {
+        const { compileButton, compileButtonIcon, compileButtonLabel } = this.elements;
+
+        compileButton.disabled = busy;
+        compileButtonIcon?.classList.toggle('spin', busy);
+        compileButtonLabel.textContent = busy ? 'Отправка...' : 'Скомпилировать';
+    }
+
+    showStatusArea () {
+        const { statusArea, taskIdLabel } = this.elements;
+
+        taskIdLabel.textContent = '';
         this.hideResultAreas();
-
-        console.log('Status area shown');
+        this.render({ status: 'uploading' });
+        setVisible(statusArea, true);
     }
 
-    hideResultAreas() {
-        const successArea = document.getElementById('successArea');
-        const errorArea = document.getElementById('errorArea');
-        const compileErrorText = document.getElementById('compileErrorText');
+    hideResultAreas () {
+        const { successArea, errorArea, errorMessage, compileErrorText, queueInfo } = this.elements;
 
-        if (successArea) successArea.style.display = 'none';
-        if (errorArea) errorArea.style.display = 'none';
+        setVisible(successArea, false);
+        setVisible(errorArea, false);
+        setVisible(errorMessage, false);
+        setVisible(queueInfo, false);
 
         // Причина прошлого отказа не должна всплыть при следующей загрузке.
-        if (compileErrorText) compileErrorText.textContent = '';
+        compileErrorText.textContent = '';
     }
 
-    startStatusPolling() {
+    startStatusPolling () {
         if (!this.currentTaskId) {
             console.error('No task ID for polling');
             return;
         }
 
-        console.log('Starting status polling for task:', this.currentTaskId);
+        this.stopStatusPolling();
+        this.statusInterval = setInterval(() => this.checkStatus(), POLL_INTERVAL_MS);
 
-        // Останавливаем предыдущий интервал если есть
-        if (this.statusInterval) {
-            clearInterval(this.statusInterval);
-            console.log('Previous polling interval cleared');
-        }
-
-        // Опрашиваем статус каждые 5 секунды
-        this.statusInterval = setInterval(() => {
-            console.log('Polling status...');
-            this.checkStatus();
-        }, 5000);
-
-        // Первый запрос сразу
+        // Первый запрос сразу: иначе первые секунды страница показывает «загружен»,
+        // хотя задача уже может быть в работе.
         this.checkStatus();
     }
 
-    async checkStatus() {
+    stopStatusPolling () {
+        if (this.statusInterval) {
+            clearInterval(this.statusInterval);
+            this.statusInterval = null;
+        }
+    }
+
+    async checkStatus () {
         if (!this.currentTaskId) {
-            console.error('No current task ID for status check');
             return;
         }
 
-        const url = `/api/status/${this.currentTaskId}`;
-        console.log('Checking status at:', url);
-
         try {
-            const response = await fetch(url);
-            console.log('Status response - Status:', response.status, 'OK:', response.ok);
+            const response = await fetch(`/api/status/${this.currentTaskId}`);
 
             if (!response.ok) {
                 // 404 значит, что задачи больше нет в памяти сервиса: состояние живёт
@@ -189,8 +344,7 @@
                 if (response.status === 404) {
                     console.warn('Task not found — the service was probably restarted');
                     this.showError('Задача не найдена — вероятно, сервис перезапускался. Отправьте файл заново.');
-                    clearInterval(this.statusInterval);
-                    this.statusInterval = null;
+                    this.stopStatusPolling();
                     return;
                 }
 
@@ -198,239 +352,183 @@
             }
 
             const result = await response.json();
-            console.log('Status response JSON:', result);
 
-            if (result.success) {
-                this.updateUI(result.data);
-
-                // Если задача завершена (успешно или с ошибкой), останавливаем опрос
-                if (result.data.status === 'Completed' || result.data.status === 'Failed') {
-                    console.log('Task completed, stopping polling. Status:', result.data.status);
-                    clearInterval(this.statusInterval);
-                    this.statusInterval = null;
-                }
-            } else {
+            if (!result.success) {
                 console.error('Status API returned error:', result.error);
                 this.showError(result.error || 'Ошибка при проверке статуса');
-                clearInterval(this.statusInterval);
-                this.statusInterval = null;
+                this.stopStatusPolling();
+                return;
+            }
+
+            this.render(result.data);
+
+            if (result.data.status === 'Completed' || result.data.status === 'Failed') {
+                this.stopStatusPolling();
             }
         } catch (error) {
             console.error('Status check failed:', error);
-            this.showError('Ошибка сети при проверке статуса: ' + error.message);
-            clearInterval(this.statusInterval);
-            this.statusInterval = null;
+            this.showError(`Ошибка сети при проверке статуса: ${error.message}`);
+            this.stopStatusPolling();
         }
     }
 
-    updateUI(status) {
-        console.log('Updating UI with status:', status);
+    render (status) {
+        const state = status.status;
+        const {
+            progressBar, statusMessage, statusText, fileInfo, queueInfo,
+            successArea, errorArea, errorMessage, compileErrorText, downloadLink
+        } = this.elements;
 
-        const progressBar = document.getElementById('progressBar');
-        const statusMessage = document.getElementById('statusMessage');
-        // errorMessage — самостоятельная плашка, её занимает showError под ошибки сети
-        // и загрузки. compileErrorText — абзац внутри errorArea, под заголовком и рядом
-        // с кнопкой скачивания лога; туда идёт причина неудачной компиляции. Раньше оба
-        // элемента назывались errorMessage, и оба сценария писали в первый из них.
-        const errorMessage = document.getElementById('errorMessage');
-        const compileErrorText = document.getElementById('compileErrorText');
-        const successArea = document.getElementById('successArea');
-        const errorArea = document.getElementById('errorArea');
-        const downloadLink = document.getElementById('downloadLink');
-        const downloadLogLink = document.getElementById('downloadLogLink');
-        const fileInfo = document.getElementById('fileInfo');
-        const queueInfo = document.getElementById('queueInfo'); // новый элемент
-
-        console.log('FileInfo element:', fileInfo);
-
-        if (!progressBar || !statusMessage) {
-            console.error('Required UI elements not found');
+        if (!(state in PROGRESS_BY_STATE)) {
+            console.warn('Unknown status:', state);
             return;
         }
 
-        // Скрываем все области результатов сначала
-        if (successArea) successArea.style.display = 'none';
-        if (errorArea) errorArea.style.display = 'none';
-        if (errorMessage) errorMessage.style.display = 'none';
-        if (queueInfo) queueInfo.style.display = 'none';
+        const percent = PROGRESS_BY_STATE[state];
+        progressBar.style.width = `${percent}%`;
+        progressBar.dataset.state = state.toLowerCase();
+        progressBar.setAttribute('aria-valuenow', String(percent));
 
-        // Функция для отображения длительности
-        const displayDuration = (prefix) => {
-            if (fileInfo && status.duration !== undefined && status.duration !== null) {
-                console.log('Duration value:', status.duration, 'Type:', typeof status.duration);
-                try {
-                    const formatted = this.formatDuration(status.duration);
-                    fileInfo.textContent = `${prefix}: ${formatted}`;
-                } catch (error) {
-                    console.error('Error formatting duration:', error);
-                    fileInfo.textContent = `${prefix}: ${status.duration} мс`;
-                }
-            } else {
-                console.log('No duration available');
-                fileInfo.textContent = '';
-            }
-        };
+        this.renderSteps(state);
 
-        // Функция для отображения позиции в очереди (ТОЛЬКО для Queued)
-        const displayQueuePosition = () => {
-            if (queueInfo && status.queuePosition !== undefined) {
-                if (status.queuePosition >= 1) { // показываем только если не первый
-                    queueInfo.textContent = `📍 Позиция в очереди: ${status.queuePosition}`;
-                    queueInfo.style.display = 'block';
-                } else {
-                    queueInfo.style.display = 'none';
-                }
-            }
-        };
+        statusMessage.dataset.state = state.toLowerCase();
+        statusText.textContent = {
+            uploading: 'Файл отправляется...',
+            Queued: 'В очереди на обработку',
+            Processing: 'Идёт компиляция',
+            Completed: 'Компиляция успешно завершена',
+            Failed: 'Компиляция не удалась'
+        }[state];
 
-        switch (status.status) {
-            case 'Queued':
-                progressBar.style.width = '20%';
-                progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-info';
-                statusMessage.textContent = 'В очереди на обработку...';
-                displayDuration('В очереди');
-                displayQueuePosition(); // показываем очередь только здесь
-                break;
+        // Ошибки предыдущего опроса не переносим: показываем то, что говорит сервер сейчас.
+        setVisible(errorMessage, false);
+        setVisible(successArea, false);
+        setVisible(errorArea, false);
+        setVisible(queueInfo, false);
 
-            case 'Processing':
-                progressBar.style.width = '50%';
-                progressBar.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
-                statusMessage.textContent = 'Идет компиляция...';
-                displayDuration('Обрабатывается');
-                // НЕ показываем очередь в Processing
-                break;
+        fileInfo.textContent = this.formatElapsed(state, status.duration);
 
-            case 'Completed':
-                progressBar.style.width = '100%';
-                progressBar.className = 'progress-bar bg-success';
-                statusMessage.textContent = 'Компиляция успешно завершена!';
-
-                if (successArea) {
-                    successArea.style.display = 'block';
-                    console.log('Success area shown');
-                }
-
-                if (downloadLink && status.downloadUrl) {
-                    downloadLink.href = status.downloadUrl;
-                    downloadLink.style.display = 'inline-block';
-                    console.log('Download link set to:', status.downloadUrl);
-                }
-
-                displayDuration('Время компиляции');
-                break;
-
-            case 'Failed':
-                progressBar.style.width = '100%';
-                progressBar.className = 'progress-bar bg-danger';
-                statusMessage.textContent = 'Ошибка компиляции';
-
-                // Показываем область ошибки с кнопкой скачивания лога
-                if (errorArea) {
-                    errorArea.style.display = 'block';
-                    console.log('Error area shown');
-                }
-
-                if (compileErrorText) {
-                    compileErrorText.textContent = status.errorMessage || 'Неизвестная ошибка';
-                }
-
-                // Настраиваем кнопку скачивания лога
-                if (downloadLogLink) {
-                    downloadLogLink.onclick = () => this.downloadLog(this.currentTaskId);
-                    downloadLogLink.style.display = 'inline-block';
-                    console.log('Download log button configured');
-                }
-
-                displayDuration('Время до ошибки');
-                break;
-
-            default:
-                console.warn('Unknown status:', status.status);
+        // Позиция осмысленна только пока задача стоит в очереди. Условие >= 1
+        // перенесено из прежнего кода как есть — оно пропускает и позицию 1, когда
+        // впереди никого нет. Это отдельный дефект (P24): правится он вместе
+        // с формулировкой сообщения, поэтому здесь поведение не менялось.
+        if (state === 'Queued' && status.queuePosition >= 1) {
+            queueInfo.textContent = `Позиция в очереди: ${status.queuePosition}`;
+            setVisible(queueInfo, true);
         }
 
-        // ОСТАНАВЛИВАЕМ POLLING при завершении (успешном или с ошибкой)
-        if ((status.status === 'Completed' || status.status === 'Failed') && this.statusInterval) {
-            console.log('Stopping polling for completed/failed task');
-            clearInterval(this.statusInterval);
-            this.statusInterval = null;
+        if (state === 'Completed') {
+            if (status.downloadUrl) {
+                downloadLink.href = status.downloadUrl;
+            }
+            setVisible(successArea, true);
         }
 
-        console.log('UI updated successfully');
+        if (state === 'Failed') {
+            compileErrorText.textContent = status.errorMessage || 'Неизвестная ошибка';
+            setVisible(errorArea, true);
+        }
     }
 
-    async downloadLog(taskId) {
+    renderSteps (state) {
+        const states = STEPS_BY_STATE[state];
+
+        Array.from(this.elements.steps.children).forEach((step, index) => {
+            step.dataset.state = states[index];
+        });
+    }
+
+    formatElapsed (state, duration) {
+        if (duration === undefined || duration === null) {
+            return '';
+        }
+
+        const prefix = {
+            Queued: 'В очереди',
+            Processing: 'Обрабатывается',
+            Completed: 'Время компиляции',
+            Failed: 'Время до ошибки'
+        }[state];
+
+        return prefix ? `${prefix}: ${this.formatDuration(duration)}` : '';
+    }
+
+    async downloadLog (taskId) {
         if (!taskId) {
-            console.error('No task ID for log download');
             this.showError('Не удалось найти задачу для скачивания лога');
             return;
         }
-
-        console.log('Downloading log for task:', taskId);
 
         try {
             const response = await fetch(`/api/download-log/${taskId}`);
 
             if (!response.ok) {
-                if (response.status === 404) {
-                    throw new Error('Лог файл не найден');
-                }
-                throw new Error(`HTTP error! status: ${response.status}`);
+                throw new Error(response.status === 404
+                    ? 'Лог компиляции не найден'
+                    : `HTTP error! status: ${response.status}`);
             }
 
-            // Получаем имя файла из заголовка Content-Disposition
+            // Имя файла задаёт сервер: у него есть исходное имя загруженного файла.
             let fileName = `compile_log_${taskId}.txt`;
             const contentDisposition = response.headers.get('Content-Disposition');
 
             if (contentDisposition) {
-                const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-                if (filenameMatch && filenameMatch[1]) {
-                    // Убираем кавычки если есть
-                    fileName = filenameMatch[1].replace(/['"]/g, '');
-                    console.log('Extracted filename from header:', fileName);
+                const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                if (match && match[1]) {
+                    fileName = match[1].replace(/['"]/g, '');
                 }
             }
 
-            // Создаем blob и скачиваем файл
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.style.display = 'none';
-            a.href = url;
-            a.download = fileName; // Используем имя с бекенда
+            const link = document.createElement('a');
 
-            document.body.appendChild(a);
-            a.click();
+            link.hidden = true;
+            link.href = url;
+            link.download = fileName;
 
-            // Очистка
+            document.body.appendChild(link);
+            link.click();
+
             window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
-
-            console.log('Log downloaded successfully with filename:', fileName);
-
+            document.body.removeChild(link);
         } catch (error) {
             console.error('Log download failed:', error);
-            this.showError('Ошибка при скачивании лога: ' + error.message);
+            this.showError(`Ошибка при скачивании лога: ${error.message}`);
         }
     }
 
-    showError(message) {
-        console.error('Showing error:', message);
+    /** Отказ по уже существующей задаче: показывается в панели статуса. */
+    showError (message) {
+        const { errorMessage, statusArea } = this.elements;
 
-        const errorMessage = document.getElementById('errorMessage');
-        const statusArea = document.getElementById('statusArea');
-
-        if (errorMessage) {
-            errorMessage.textContent = message;
-            errorMessage.style.display = 'block';
-        }
-
-        if (statusArea) {
-            statusArea.style.display = 'block';
-        }
+        errorMessage.textContent = message;
+        setVisible(errorMessage, true);
+        setVisible(statusArea, true);
     }
 
-    formatDuration(milliseconds) {
-        // Преобразуем в число на случай, если пришла строка
+    showFormError (message) {
+        const { formError } = this.elements;
+
+        formError.textContent = message;
+        setVisible(formError, true);
+    }
+
+    hideFormError () {
+        setVisible(this.elements.formError, false);
+    }
+
+    /** Возврат к пустой форме после успешной сборки. */
+    reset () {
+        this.stopStatusPolling();
+        this.currentTaskId = null;
+        this.selectFile(null);
+        this.hideResultAreas();
+        setVisible(this.elements.statusArea, false);
+        this.elements.fileInput.focus();
+    }
+
+    formatDuration (milliseconds) {
         const ms = Number(milliseconds);
 
         if (isNaN(ms)) {
@@ -441,22 +539,37 @@
         const seconds = Math.round(ms / 1000);
         if (seconds < 60) {
             return `${seconds} сек.`;
-        } else {
-            const minutes = Math.floor(seconds / 60);
-            const remainingSeconds = seconds % 60;
-            if (minutes < 60) {
-                return `${minutes} мин. ${remainingSeconds} сек.`;
-            } else {
-                const hours = Math.floor(minutes / 60);
-                const remainingMinutes = minutes % 60;
-                return `${hours} ч. ${remainingMinutes} мин.`;
-            }
         }
+
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) {
+            return `${minutes} мин. ${seconds % 60} сек.`;
+        }
+
+        return `${Math.floor(minutes / 60)} ч. ${minutes % 60} мин.`;
     }
 }
 
-// Инициализация при загрузке страницы
-console.log('Document loading...');
+/**
+ * Переключатель темы. Начальное значение выставляет инлайновый скрипт в head —
+ * здесь остаётся только реакция на нажатие и запоминание выбора.
+ */
+function initThemeToggle () {
+    const toggle = document.getElementById('themeToggle');
+
+    toggle?.addEventListener('click', () => {
+        const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+
+        document.documentElement.dataset.theme = next;
+
+        try {
+            localStorage.setItem(THEME_STORAGE_KEY, next);
+        } catch (error) {
+            // Приватный режим: тема продержится до перезагрузки страницы.
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // Страховка от повторной инициализации. Скрипт уже был однажды подключён на
     // странице дважды, и тогда создавалось два экземпляра TexCompiler: каждый вешал
@@ -467,11 +580,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     window.__texCompilerInitialized = true;
 
-    console.log('DOM fully loaded, initializing TexCompiler...');
-    try {
-        new TexCompiler();
-        console.log('TexCompiler initialized successfully');
-    } catch (error) {
-        console.error('Failed to initialize TexCompiler:', error);
+    initThemeToggle();
+
+    // Скрипт подключён в _Layout, то есть работает и на странице ошибки, где формы
+    // компиляции нет: там инициализировать нечего.
+    if (document.getElementById('uploadForm')) {
+        try {
+            new TexCompiler();
+        } catch (error) {
+            console.error('Failed to initialize TexCompiler:', error);
+        }
     }
 });

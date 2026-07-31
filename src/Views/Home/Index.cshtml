@@ -1,60 +1,168 @@
-﻿<div class="container mt-4">
-    <div class="row justify-content-center">
-        <div class="col-md-8">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="text-center">LaTeX + Asymptote Compiler</h2>
-                </div>
-                <div class="card-body">
-                    <form id="uploadForm" enctype="multipart/form-data">
-                        <div class="mb-3">
-                            <label for="texFile" class="form-label">
-                                <i class="fas fa-file-upload"></i> Выберите файл для компиляции:
-                            </label>
-                            <input type="file" class="form-control" id="texFile" name="texFile" accept=".tex,.zip" required>
-                            <div class="form-text">
-                                <strong>Поддерживаемые форматы:</strong><br>
-                                • <i class="fas fa-file-alt"></i> Одиночные .tex файлы<br>
-                                • <i class="fas fa-file-archive"></i> .zip архивы с проектом (изображения, стили, etc.)
-                            </div>
-                        </div>
-                        <button type="submit" class="btn btn-primary w-100" id="compileButton">
-                            Скомпилировать
-                        </button>
-                    </form>
+﻿@using TexCompiler.Services
+@inject IConfiguration Configuration
+@{
+    ViewData["Title"] = "Компиляция";
 
-                    <div id="statusArea" class="mt-4" style="display: none;">
-                        <h4>Статус компиляции:</h4>
-                        <div class="progress mb-3" style="height: 20px;">
-                            <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
-                        </div>
-                        <div id="statusMessage" class="alert alert-info"></div>
+    // Лимит берётся из той же точки, что и серверная проверка: подпись под зоной
+    // загрузки и отказ контроллера не должны расходиться, если значение
+    // в конфигурации поменяют.
+    var maxFileSizeMegabytes = UploadLimits.GetMaxFileSizeMegabytes(Configuration);
+}
 
-                        <div class="mt-2 text-center">
-                            <small class="text-muted" id="fileInfo" style="display: block !important;"></small>
-                        </div>
-                        <!-- ДОБАВЛЯЕМ ЭТОТ БЛОК ДЛЯ ОЧЕРЕДИ -->
-                        <div class="mt-1 text-center">
-                            <small class="text-secondary" id="queueInfo" style="display: none !important;"></small>
-                        </div>
+<section class="hero">
+    <p class="hero__eyebrow">LaTeX + Asymptote</p>
+    <h1 class="hero__title">Соберём PDF из вашего проекта</h1>
+    <p class="hero__subtitle">
+        Загрузите файл — сервис прогонит pdflatex вместе с Asymptote,
+        соберёт графику и вернёт готовый PDF со ссылкой на скачивание.
+    </p>
+</section>
 
-                        <div id="errorMessage" class="alert alert-danger" style="display: none;"></div>
-                        <div id="successArea" style="display: none;">
-                            <a id="downloadLink" class="btn btn-success btn-lg w-100">Скачать PDF</a>
-                        </div>
-                        <div id="errorArea" class="alert alert-danger mt-3" style="display: none;">
-                            <h5><i class="fas fa-exclamation-triangle"></i> Компиляция завершилась с ошибкой</h5>
-                            @* Отдельный идентификатор, а не второй errorMessage: getElementById
-                               возвращает первый совпавший элемент, поэтому причина отказа уходила
-                               в самостоятельный блок выше, а этот абзац оставался пустым. *@
-                            <p id="compileErrorText" class="mb-2"></p>
-                            <button id="downloadLogLink" class="btn btn-outline-danger btn-sm">
-                                <i class="fas fa-download"></i> Скачать лог компиляции
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+<form id="uploadForm" class="panel" enctype="multipart/form-data" novalidate>
+    <div class="dropzone" id="dropZone" data-max-size-mb="@maxFileSizeMegabytes">
+        <input type="file" class="sr-only" id="texFile" name="texFile" accept=".tex,.zip" required>
+
+        <div class="dropzone__idle" id="dropZoneIdle">
+            @* Растянутый на всю зону label открывает выбор файла кликом в любом
+               месте — без обработчиков и без tabindex, средствами браузера.
+               Вместе с выбранным файлом эта область скрывается, и кнопка сброса
+               под ней становится доступной. *@
+            <label class="dropzone__hit" for="texFile">
+                <span class="sr-only">Выберите файл для компиляции</span>
+            </label>
+            <span class="dropzone__icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path d="M17 8l-5-5-5 5" />
+                    <path d="M12 3v13" />
+                </svg>
+            </span>
+            <span class="dropzone__label">Перетащите файл сюда или <span class="dropzone__browse">выберите на диске</span></span>
+            <span class="dropzone__hint">.tex или .zip, до @maxFileSizeMegabytes МБ</span>
+        </div>
+
+        <div class="file-chip" id="dropZoneFile" hidden>
+            <span class="file-chip__icon" aria-hidden="true">
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <path d="M14 2v6h6" />
+                </svg>
+            </span>
+            <span class="file-chip__body">
+                <span class="file-chip__name" id="selectedFileName"></span>
+                <span class="file-chip__meta" id="selectedFileSize"></span>
+            </span>
+            <button type="button" class="file-chip__remove" id="clearFileButton" aria-label="Убрать файл">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+            </button>
         </div>
     </div>
-</div>
+
+    <ul class="formats">
+        <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <path d="M14 2v6h6" />
+            </svg>
+            <span>Одиночный <code>.tex</code></span>
+        </li>
+        <li>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                <path d="M10 3v6m0 3v1" />
+            </svg>
+            <span><code>.zip</code> с изображениями, стилями и .asy</span>
+        </li>
+    </ul>
+
+    @* Отказы, случившиеся до появления задачи — неподходящее расширение, слишком
+       большой файл, обрыв загрузки, — показываются здесь, рядом с зоной выбора.
+       Панель статуса в этот момент пуста, и открывать её ради одной строки
+       означало бы показать пользователю пустой список шагов. *@
+    <div class="notice notice--danger" id="formError" role="alert" hidden></div>
+
+    <button type="submit" class="btn btn--primary btn--block" id="compileButton">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" id="compileButtonIcon">
+            <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
+        </svg>
+        <span id="compileButtonLabel">Скомпилировать</span>
+    </button>
+</form>
+
+<section class="panel" id="statusArea" hidden>
+    <h2 class="panel__title">
+        <span>Компиляция</span>
+        <span class="task-id" id="taskIdLabel"></span>
+    </h2>
+
+    <ol class="steps" id="steps">
+        <li data-step="queued">В очереди</li>
+        <li data-step="processing">Компиляция</li>
+        <li data-step="done">Готово</li>
+    </ol>
+
+    <div class="progress">
+        <div class="progress__bar" id="progressBar" role="progressbar" aria-label="Прогресс компиляции"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+    </div>
+
+    <p class="status__message" id="statusMessage" aria-live="polite" aria-atomic="true">
+        <span class="status__dot" aria-hidden="true"></span>
+        <span id="statusText"></span>
+    </p>
+
+    <div class="status__meta">
+        <span id="fileInfo"></span>
+        <span id="queueInfo" hidden></span>
+    </div>
+
+    @* Плашка под ошибки сети, загрузки и пропавшей задачи — всё, что случилось
+       вне самой компиляции. Причина неудачной компиляции идёт ниже,
+       в compileErrorText. *@
+    <div class="notice notice--danger" id="errorMessage" hidden></div>
+
+    <div class="result" id="successArea" hidden>
+        <div class="result__icon" aria-hidden="true">
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6L9 17l-5-5" />
+            </svg>
+        </div>
+        <h3 class="result__title">PDF собран</h3>
+        <p class="result__hint">Файл доступен, пока сервис не перезапустится или не сработает чистка.</p>
+        <div class="result__actions">
+            <a class="btn btn--success" id="downloadLink" download>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path d="M7 10l5 5 5-5" />
+                    <path d="M12 15V3" />
+                </svg>
+                Скачать PDF
+            </a>
+            <button type="button" class="btn btn--ghost" id="resetButton">Скомпилировать ещё</button>
+        </div>
+    </div>
+
+    <div class="notice notice--danger" id="errorArea" hidden>
+        <div class="notice__head">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                <path d="M12 9v4m0 4h.01" />
+            </svg>
+            Компиляция завершилась с ошибкой
+        </div>
+        @* Отдельный идентификатор, а не второй errorMessage: getElementById
+           возвращает первый совпавший элемент, поэтому причина отказа уходила
+           в самостоятельную плашку выше, а этот абзац оставался пустым. *@
+        <p class="notice__text" id="compileErrorText"></p>
+        <button type="button" class="btn btn--danger-ghost btn--sm" id="downloadLogLink">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <path d="M7 10l5 5 5-5" />
+                <path d="M12 15V3" />
+            </svg>
+            Скачать лог компиляции
+        </button>
+    </div>
+</section>

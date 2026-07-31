@@ -1,22 +1,932 @@
+/* ============================================================================
+   TexCompiler — оформление интерфейса.
+
+   Файл самодостаточен: Bootstrap со страниц снят, поэтому здесь и сброс
+   браузерных стилей, и каркас страницы, и компоненты. Префикс классам не нужен —
+   чужих правил на странице больше нет.
+
+   Тему задаёт атрибут data-theme на элементе html: его выставляет короткий
+   скрипт в head до первой отрисовки, чтобы тёмная тема не мигала светлым фоном.
+   Значения ниже — светлая тема, за ними блок переопределений для тёмной.
+   ========================================================================= */
+
+:root {
+    color-scheme: light;
+
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    /* Нейтральная шкала. Фон страницы не белый: тогда белые панели читаются как
+       приподнятые над ним, и рамка им нужна только намёком. */
+    --bg: #f6f7f9;
+    --bg-subtle: #eceef2;
+    --surface: #ffffff;
+    --surface-sunken: #f4f5f8;
+    --border: #e3e5ea;
+    --border-strong: #cdd1da;
+
+    --text: #16181d;
+    --text-muted: #5c6270;
+    --text-subtle: #868c99;
+
+    /* Один акцент на весь интерфейс. Остальные цвета — только состояния задачи:
+       ожидание, работа, успех, отказ. */
+    --accent: #5145cd;
+    --accent-hover: #4338ab;
+    --accent-soft: #eeecfb;
+    --accent-contrast: #ffffff;
+    --accent-ring: rgba(81, 69, 205, 0.3);
+
+    --info: #1f6feb;
+    --work: #b45309;
+    --success: #16794c;
+    --success-hover: #12653f;
+    --success-soft: #e6f5ee;
+    --success-border: #b3ddc7;
+    --danger: #b42318;
+    --danger-soft: #fdeceb;
+    --danger-border: #f3c9c5;
+
+    --radius-sm: 6px;
+    --radius: 10px;
+    --radius-lg: 16px;
+
+    --shadow: 0 1px 3px rgba(16, 18, 25, 0.08), 0 8px 24px -12px rgba(16, 18, 25, 0.18);
+
+    --transition: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+
+    --bg: #101216;
+    --bg-subtle: #171a1f;
+    --surface: #191c22;
+    --surface-sunken: #14161b;
+    --border: #282c34;
+    --border-strong: #3a3f4a;
+
+    --text: #e9eaee;
+    --text-muted: #a2a8b5;
+    --text-subtle: #7b818e;
+
+    --accent: #8b83f5;
+    --accent-hover: #9d96f7;
+    --accent-soft: #23213a;
+    --accent-contrast: #14121f;
+    --accent-ring: rgba(139, 131, 245, 0.35);
+
+    --info: #6ba6ff;
+    --work: #e0a44c;
+    --success: #4ec08a;
+    --success-hover: #6bcd9e;
+    --success-soft: #12241c;
+    --success-border: #244c39;
+    --danger: #ff8a80;
+    --danger-soft: #2a1917;
+    --danger-border: #4a2a26;
+
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+}
+
+/* ------------------------------------------------------------- сброс и база */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+/* Видимость областей интерфейса переключается атрибутом hidden, а не инлайновым
+   display: правило ниже гарантирует, что атрибут сработает поверх любого
+   display, заданного классом. */
+[hidden] {
+    display: none !important;
+}
+
 html {
-  font-size: 14px;
-}
-
-@media (min-width: 768px) {
-  html {
-    font-size: 16px;
-  }
-}
-
-.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
-  box-shadow: 0 0 0 0.1rem white, 0 0 0 0.25rem #258cfb;
-}
-
-html {
-  position: relative;
-  min-height: 100%;
+    -webkit-text-size-adjust: 100%;
 }
 
 body {
-  margin-bottom: 60px;
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--text);
+    background-color: var(--bg);
+    -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+    margin: 0;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+}
+
+p {
+    margin: 0;
+}
+
+a {
+    color: var(--accent);
+    text-underline-offset: 2px;
+}
+
+a:hover {
+    color: var(--accent-hover);
+}
+
+code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* --------------------------------------------------------- каркас страницы */
+
+.app-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background-color: var(--bg);
+    border-bottom: 1px solid var(--border);
+}
+
+.app-header__inner,
+.app-main,
+.app-footer__inner {
+    width: 100%;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 0 20px;
+}
+
+.app-header__inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    height: 58px;
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-weight: 600;
+    font-size: 0.975rem;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.brand:hover {
+    color: var(--text);
+}
+
+.brand__mark {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background-color: var(--accent);
+    color: var(--accent-contrast);
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.app-main {
+    flex: 1 0 auto;
+    padding-top: 44px;
+    padding-bottom: 56px;
+}
+
+.app-footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--border);
+    padding: 18px 0;
+    font-size: 0.85rem;
+    color: var(--text-subtle);
+}
+
+.app-footer__inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+/* ------------------------------------------------------------- кнопка темы */
+
+.theme-toggle {
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background-color: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color var(--transition), border-color var(--transition);
+}
+
+.theme-toggle:hover {
+    color: var(--text);
+    border-color: var(--border-strong);
+}
+
+/* Видна ровно одна иконка — та, что показывает, куда переключит нажатие. */
+:root[data-theme="dark"] .theme-toggle__moon,
+:root:not([data-theme="dark"]) .theme-toggle__sun {
+    display: none;
+}
+
+/* -------------------------------------------------------- заголовок страницы */
+
+.hero {
+    margin-bottom: 28px;
+}
+
+.hero__eyebrow {
+    margin-bottom: 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.hero__title {
+    font-size: clamp(1.6rem, 4.5vw, 2.1rem);
+    margin-bottom: 10px;
+}
+
+.hero__subtitle {
+    max-width: 54ch;
+    color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------------ панели */
+
+.panel {
+    padding: 22px;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+}
+
+.panel + .panel {
+    margin-top: 20px;
+}
+
+.panel__title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 18px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-subtle);
+}
+
+/* ------------------------------------------------------------ зона загрузки */
+
+.dropzone {
+    position: relative;
+    padding: 30px 22px;
+    text-align: center;
+    background-color: var(--surface-sunken);
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: border-color var(--transition), background-color var(--transition);
+}
+
+.dropzone:hover {
+    border-color: var(--accent);
+}
+
+.dropzone:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Класс вешает скрипт на dragenter и снимает на dragleave и drop. */
+.dropzone.is-dragover {
+    border-color: var(--accent);
+    border-style: solid;
+    background-color: var(--accent-soft);
+}
+
+.dropzone.has-file {
+    padding: 14px;
+    text-align: left;
+    background-color: var(--surface);
+    border-style: solid;
+    border-color: var(--border);
+    cursor: default;
+}
+
+/* Прозрачный label поверх всей зоны: пока файл не выбран, клик в любом месте
+   открывает выбор файла. Лежит внутри dropzone__idle, поэтому исчезает вместе
+   с ним и не перехватывает нажатие на кнопку сброса. */
+.dropzone__hit {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    cursor: pointer;
+}
+
+.dropzone__icon {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin: 0 auto 14px;
+    border-radius: 12px;
+    background-color: var(--accent-soft);
+    color: var(--accent);
+}
+
+.dropzone__label {
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 600;
+}
+
+.dropzone__hint {
+    display: block;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.dropzone__browse {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+/* ---------------------------------------------------------- выбранный файл */
+
+.file-chip {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.file-chip__icon {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 9px;
+    background-color: var(--accent-soft);
+    color: var(--accent);
+}
+
+.file-chip__body {
+    flex: 1;
+    min-width: 0;
+}
+
+.file-chip__name {
+    display: block;
+    overflow: hidden;
+    font-size: 0.925rem;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-chip__meta {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-subtle);
+}
+
+.file-chip__remove {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-subtle);
+    cursor: pointer;
+    transition: color var(--transition), background-color var(--transition);
+}
+
+.file-chip__remove:hover {
+    color: var(--danger);
+    background-color: var(--danger-soft);
+}
+
+/* ----------------------------------------------------------- форматы, лимит */
+
+.formats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    margin: 14px 0 20px;
+    padding: 0;
+    list-style: none;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.formats li {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.formats svg {
+    flex-shrink: 0;
+    color: var(--text-subtle);
+}
+
+.formats code {
+    padding: 1px 5px;
+    border-radius: 4px;
+    background-color: var(--bg-subtle);
+    color: var(--text);
+}
+
+/* ----------------------------------------------------------------- кнопки */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.4;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.btn--block {
+    width: 100%;
+}
+
+.btn--primary {
+    background-color: var(--accent);
+    color: var(--accent-contrast);
+}
+
+.btn--primary:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+    color: var(--accent-contrast);
+}
+
+.btn--success {
+    background-color: var(--success);
+    color: #ffffff;
+}
+
+.btn--success:hover {
+    background-color: var(--success-hover);
+    color: #ffffff;
+}
+
+.btn--ghost {
+    background-color: transparent;
+    border-color: var(--border-strong);
+    color: var(--text-muted);
+}
+
+.btn--ghost:hover {
+    border-color: var(--text-subtle);
+    color: var(--text);
+}
+
+.btn--danger-ghost {
+    background-color: transparent;
+    border-color: var(--danger-border);
+    color: var(--danger);
+}
+
+.btn--danger-ghost:hover {
+    background-color: var(--danger-soft);
+    color: var(--danger);
+}
+
+.btn--sm {
+    padding: 7px 13px;
+    font-size: 0.875rem;
+}
+
+/* Пока запрос в пути, крутится только иконка внутри кнопки. */
+.spin {
+    animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ------------------------------------------------------------------- шаги */
+
+.steps {
+    display: flex;
+    margin: 0 0 20px;
+    padding: 0;
+    list-style: none;
+}
+
+.steps li {
+    position: relative;
+    flex: 1;
+    padding-top: 26px;
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--text-subtle);
+    transition: color var(--transition);
+}
+
+/* Соединительная линия между шагами: у крайних обрезана до середины, чтобы
+   не выходила за первый и последний кружок. */
+.steps li::before {
+    content: "";
+    position: absolute;
+    top: 7px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background-color: var(--border);
+}
+
+.steps li:first-child::before {
+    left: 50%;
+}
+
+.steps li:last-child::before {
+    right: 50%;
+}
+
+.steps li::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 16px;
+    height: 16px;
+    margin-left: -8px;
+    border: 2px solid var(--border-strong);
+    border-radius: 50%;
+    background-color: var(--surface);
+    transition: background-color var(--transition), border-color var(--transition);
+}
+
+.steps li[data-state="active"] {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.steps li[data-state="active"]::after {
+    border-color: var(--accent);
+    background-color: var(--accent);
+    box-shadow: 0 0 0 4px var(--accent-ring);
+}
+
+.steps li[data-state="done"] {
+    color: var(--text-muted);
+}
+
+.steps li[data-state="done"]::after {
+    border-color: var(--success);
+    background-color: var(--success);
+}
+
+.steps li[data-state="done"]::before {
+    background-color: var(--success);
+}
+
+.steps li[data-state="failed"] {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.steps li[data-state="failed"]::after {
+    border-color: var(--danger);
+    background-color: var(--danger);
+}
+
+/* --------------------------------------------------------------- прогресс */
+
+.progress {
+    height: 6px;
+    margin-bottom: 16px;
+    overflow: hidden;
+    background-color: var(--bg-subtle);
+    border-radius: 999px;
+}
+
+.progress__bar {
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background-color: var(--accent);
+    transition: width 400ms cubic-bezier(0.4, 0, 0.2, 1), background-color var(--transition);
+}
+
+.progress__bar[data-state="uploading"] {
+    background-color: var(--accent);
+}
+
+.progress__bar[data-state="queued"] {
+    background-color: var(--info);
+}
+
+.progress__bar[data-state="processing"] {
+    background-color: var(--work);
+}
+
+.progress__bar[data-state="completed"] {
+    background-color: var(--success);
+}
+
+.progress__bar[data-state="failed"] {
+    background-color: var(--danger);
+}
+
+/* Полосы едут, пока задача не завершилась. Без движения интерфейс выглядит
+   зависшим: статус опрашивается раз в несколько секунд, и между опросами
+   ширина полосы не меняется. */
+.progress__bar[data-state="uploading"],
+.progress__bar[data-state="queued"],
+.progress__bar[data-state="processing"] {
+    background-image: linear-gradient(
+        115deg,
+        rgba(255, 255, 255, 0.28) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255, 255, 255, 0.28) 50%,
+        rgba(255, 255, 255, 0.28) 75%,
+        transparent 75%
+    );
+    background-size: 14px 14px;
+    animation: progress-stripes 700ms linear infinite;
+}
+
+@keyframes progress-stripes {
+    to {
+        background-position: 14px 0;
+    }
+}
+
+/* ---------------------------------------------------------- строка статуса */
+
+.status__message {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-weight: 600;
+}
+
+.status__dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--text-subtle);
+}
+
+.status__message[data-state="uploading"] .status__dot {
+    background-color: var(--accent);
+    animation: pulse 1.6s ease-in-out infinite;
+}
+
+.status__message[data-state="queued"] .status__dot {
+    background-color: var(--info);
+    animation: pulse 1.6s ease-in-out infinite;
+}
+
+.status__message[data-state="processing"] .status__dot {
+    background-color: var(--work);
+    animation: pulse 1.6s ease-in-out infinite;
+}
+
+.status__message[data-state="completed"] .status__dot {
+    background-color: var(--success);
+}
+
+.status__message[data-state="failed"] .status__dot {
+    background-color: var(--danger);
+}
+
+@keyframes pulse {
+    50% {
+        opacity: 0.35;
+    }
+}
+
+.status__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    margin-top: 10px;
+    font-size: 0.85rem;
+    color: var(--text-subtle);
+}
+
+.status__meta > span {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.task-id {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+}
+
+/* ------------------------------------------------------------- сообщения */
+
+.notice {
+    margin-top: 18px;
+    padding: 14px 16px;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    font-size: 0.925rem;
+}
+
+.notice--danger {
+    background-color: var(--danger-soft);
+    border-color: var(--danger-border);
+    color: var(--danger);
+}
+
+.notice__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.notice__text {
+    /* Причина отказа приходит из вывода pdflatex: переводы строк в ней значимы,
+       а длинные пути не должны растягивать панель по горизонтали. */
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--text);
+}
+
+.notice__text:empty {
+    display: none;
+}
+
+/* -------------------------------------------------------------- результат */
+
+.result {
+    margin-top: 18px;
+    padding: 18px;
+    text-align: center;
+    background-color: var(--success-soft);
+    border: 1px solid var(--success-border);
+    border-radius: var(--radius);
+}
+
+.result__icon {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    margin: 0 auto 12px;
+    border-radius: 50%;
+    background-color: var(--success);
+    color: #ffffff;
+}
+
+.result__title {
+    margin-bottom: 4px;
+    font-size: 1.05rem;
+}
+
+.result__hint {
+    margin-bottom: 16px;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.result__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+}
+
+.result__actions .btn {
+    flex: 1 1 180px;
+}
+
+/* --------------------------------------------------------- страница ошибки */
+
+.error-page {
+    max-width: 62ch;
+}
+
+.error-page__text {
+    margin-top: 12px;
+    color: var(--text-muted);
+}
+
+.error-page__id {
+    display: block;
+    margin-top: 18px;
+    padding: 10px 12px;
+    background-color: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.error-page__actions {
+    margin-top: 20px;
+}
+
+/* ---------------------------------------------------------- узкие экраны */
+
+@media (max-width: 560px) {
+    .app-main {
+        padding-top: 30px;
+    }
+
+    .panel {
+        padding: 18px 16px;
+    }
+
+    .steps li {
+        font-size: 0.72rem;
+    }
+}
+
+/* Пользователь, попросивший систему не анимировать интерфейс, не должен видеть
+   ни бегущих полос, ни пульсации. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
 }
