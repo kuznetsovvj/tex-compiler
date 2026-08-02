@@ -126,9 +126,13 @@
     hideResultAreas() {
         const successArea = document.getElementById('successArea');
         const errorArea = document.getElementById('errorArea');
+        const compileErrorText = document.getElementById('compileErrorText');
 
         if (successArea) successArea.style.display = 'none';
         if (errorArea) errorArea.style.display = 'none';
+
+        // Причина прошлого отказа не должна всплыть при следующей загрузке.
+        if (compileErrorText) compileErrorText.textContent = '';
     }
 
     startStatusPolling() {
@@ -169,6 +173,15 @@
             console.log('Status response - Status:', response.status, 'OK:', response.ok);
 
             if (!response.ok) {
+                // 404 значит, что задачи больше нет в памяти сервиса
+                if (response.status === 404) {
+                    console.warn('Task not found - the service was probably restarted');
+                    this.showError('Задача не найдена - вероятно, сервис перезапускался. Отправьте файл заново.');
+                    clearInterval(this.statusInterval);
+                    this.statusInterval = null;
+                    return;
+                }
+
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
@@ -204,6 +217,7 @@
         const progressBar = document.getElementById('progressBar');
         const statusMessage = document.getElementById('statusMessage');
         const errorMessage = document.getElementById('errorMessage');
+        const compileErrorText = document.getElementById('compileErrorText');
         const successArea = document.getElementById('successArea');
         const errorArea = document.getElementById('errorArea');
         const downloadLink = document.getElementById('downloadLink');
@@ -300,9 +314,8 @@
                     console.log('Error area shown');
                 }
 
-                if (errorMessage) {
-                    errorMessage.textContent = status.errorMessage || 'Неизвестная ошибка';
-                    errorMessage.style.display = 'block';
+                if (complcompileErrorText) {
+                    compileErrorText.textContent = status.errorMessage || 'Неизвестная ошибка';
                 }
 
                 // Настраиваем кнопку скачивания лога
@@ -429,6 +442,16 @@
 // Инициализация при загрузке страницы
 console.log('Document loading...');
 document.addEventListener('DOMContentLoaded', () => {
+
+    // Страховка от повторной инициализации. Скрипт уже был однажды подключен на
+    // странице дважды, и тогда создавалось два экземпляра TexCompiler: каждый вешал
+    // свой обработчик submit, и один клик отправлял на сервер две задачи.
+    if (window.__texCompilerInitialized) {
+        console.warn('TexCompiler already initialized, skipping duplicate initializion');
+        return;
+    }
+    window.__texCompilerInitialized = true;
+
     console.log('DOM fully loaded, initializing TexCompiler...');
     try {
         new TexCompiler();
@@ -436,9 +459,4 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
         console.error('Failed to initialize TexCompiler:', error);
     }
-});
-
-// Также инициализируем при полной загрузке страницы (на всякий случай)
-window.addEventListener('load', () => {
-    console.log('Window fully loaded');
 });

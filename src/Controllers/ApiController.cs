@@ -196,8 +196,9 @@ namespace TexCompiler.Controllers
                     return NotFound("Лог компиляции не найден");
                 }
 
-                if (task.LogFilePath == null || task.LogFilePath.Length == 0)
+                if (string.IsNullOrEmpty(task.LogFilePath) || !System.IO.File.Exists(task.LogFilePath))
                 {
+					_logger.LogWarning("Log file not found for task: {TaskId}, Path: {Path}", taskId, task.LogFilePath);
                     return NotFound("Лог компиляции не найден");
                 }
 

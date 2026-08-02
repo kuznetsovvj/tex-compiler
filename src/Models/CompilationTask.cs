@@ -12,7 +12,7 @@
 			_sourceFile = sourceFile;
 
             TaskId = Guid.NewGuid();
-            CreatedAt = DateTime.Now;
+            CreatedAt = DateTime.UtcNow;
 			TaskStatus = CompilationTaskStatus.Queued;
 		}
 
@@ -69,7 +69,11 @@
                 CompilationTaskStatus.Failed;
             CompletedAt = DateTime.UtcNow;
             PdfFilePath = result.FilePath;
-            LogFilePath = result.LogFilePath;
+
+			if (!string.IsNullOrEmpty(result.LogFilePath))
+			{
+				LogFilePath = result.LogFilePath;
+			}
             ErrorMessage = result.ErrorMessage;
             return this;
         }
