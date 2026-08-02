@@ -137,7 +137,7 @@ public class CompilationService : ICompilationService
         }
         finally
         {
-            SaveLogToFile(task, _logDir, tempDir);
+            SaveLogToFile(task, mainTexFile, tempDir);
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
@@ -289,18 +289,33 @@ public class CompilationService : ICompilationService
         }
     }
 
-    private void SaveLogToFile(CompilationTask task, string logsDir, string tempDir)
+    /// <summary>
+    /// Копирует лог pdflatex из временной директории в хранилище логов.
+    /// Имя лога определяет сам pdflatex по своему входному файлу, поэтому оно
+    /// производится от главного tex-файла, а не от имени загруженного: для
+    /// zip-архива это разные имена, и лог по имени файла не нашелся бы никогда.
+    /// </summary>
+    private void SaveLogToFile(CompilationTask task, string mainTexFile, string tempDir)
     {
         try
         {
-            var logFilePath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.SourceFile) + ".log");
-            if (File.Exists(logFilePath))
+            var logFileName = Path.GetFileNameWithoutExtension(mainTexFile) + ".log";
+
+            var logFilePath = Path.Combine(tempDir, logFileName);
+            if (!File.Exists(logFilePath))
             {
-                var outputLogName = $"{task.TaskId}.log";
-                var outputLogFilePath = Path.Combine(_logDir, outputLogName);
-                File.Copy(logFilePath, outputLogFilePath, overwrite: true);
-                task.LogFilePath = outputLogFilePath;
+                var foundLogs = Directory.GetFiles(tempDir, "*.log").Select(f => Path.GetFileName(f));
+
+                _logger.LogWarning("Compilation log {Excepted} not found for task {TaskId}. Logs in temp dir: {Found}",
+                    logFileName, task.TaskId, string.Join(", ", foundLogs));
+                return;
             }
+
+            var outputLogFilePath = Path.Combine(_logDir, $"{task.TaskId}.log");
+            File.Copy(logFilePath, outputLogFilePath, overwrite: true);
+            task.LogFilePath = outputLogFilePath;
+
+            _logger.LogInformation("Compilation log saved for task {TaskId}", task.TaskId);
         }
         catch (Exception ex)
         {
