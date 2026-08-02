@@ -126,9 +126,13 @@
     hideResultAreas() {
         const successArea = document.getElementById('successArea');
         const errorArea = document.getElementById('errorArea');
+        const compileErrorText = document.getElementById('compileErrorText');
 
         if (successArea) successArea.style.display = 'none';
         if (errorArea) errorArea.style.display = 'none';
+
+        // Причина прошлого отказа не должна всплыть при следующей загрузке.
+        if (compileErrorText) compileErrorText.textContent = '';
     }
 
     startStatusPolling() {
@@ -213,6 +217,7 @@
         const progressBar = document.getElementById('progressBar');
         const statusMessage = document.getElementById('statusMessage');
         const errorMessage = document.getElementById('errorMessage');
+        const compileErrorText = document.getElementById('compileErrorText');
         const successArea = document.getElementById('successArea');
         const errorArea = document.getElementById('errorArea');
         const downloadLink = document.getElementById('downloadLink');
@@ -309,9 +314,8 @@
                     console.log('Error area shown');
                 }
 
-                if (errorMessage) {
-                    errorMessage.textContent = status.errorMessage || 'Неизвестная ошибка';
-                    errorMessage.style.display = 'block';
+                if (complcompileErrorText) {
+                    compileErrorText.textContent = status.errorMessage || 'Неизвестная ошибка';
                 }
 
                 // Настраиваем кнопку скачивания лога
