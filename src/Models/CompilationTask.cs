@@ -12,7 +12,7 @@
 			_sourceFile = sourceFile;
 
             TaskId = Guid.NewGuid();
-            CreatedAt = DateTime.Now;
+            CreatedAt = DateTime.UtcNow;
 			TaskStatus = CompilationTaskStatus.Queued;
 		}
 
