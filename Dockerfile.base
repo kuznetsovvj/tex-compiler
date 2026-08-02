@@ -8,7 +8,7 @@ RUN ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
 
 RUN apt-get update && \
     apt-get install -y \
-    texlive-full \    
+    texlive-full \
     asymptote \
     ghostscript \
     python3 \
