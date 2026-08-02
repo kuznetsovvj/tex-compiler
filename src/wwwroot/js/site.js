@@ -169,6 +169,15 @@
             console.log('Status response - Status:', response.status, 'OK:', response.ok);
 
             if (!response.ok) {
+                // 404 значит, что задачи больше нет в памяти сервиса
+                if (response.status === 404) {
+                    console.warn('Task not found - the service was probably restarted');
+                    this.showError('Задача не найдена - вероятно, сервис перезапускался. Отправьте файл заново.');
+                    clearInterval(this.statusInterval);
+                    this.statusInterval = null;
+                    return;
+                }
+
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
