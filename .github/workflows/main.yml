@@ -14,14 +14,62 @@ jobs:
           username: ${{ secrets.VDS_USER }}
           key: ${{ secrets.VDS_SSH_KEY }}
           script: |
+            # Без set -e скрипт идет дальше после любой неудачи: упавшая сборка неудачи не
+            # прерывала деплой, и контейнер молча перезапускался на прежнем образе,
+            # а workflow оставался зелёным.
+            set -e
+
             cd ${{ secrets.PROJECT_PATH }}
-            git pull origin main
+
+            # --ff-only: если на сервере окажутся локальные изменения или ветка разойдется,
+            # деплой должен упасть явно, а не создавать merge-коммит прямо на проде.
+            git pull --ff-only origin main
+
+            # ВНИМАНИЕ: базовый образ texcompiler-base:latest здесь не собирается.
+            # Он должен быть собран на сервере вручную - см.раздел "Развёртывание"
+            # в README.md. Изменения в Dockerfile.base автодеплой не подхватывает.
             docker build -f Dockerfile.app -t texcompiler-app:latest .
+
             docker stop texcompiler-app || true
             docker rm texcompiler-app || true
+
+            # --restart unless-stopped: без него контейнер не поднимается после 
+            # перезагрузки VDS, и сервер лежит, пока кто-нибудь не заметит.
             docker run -d \
               --name texcompiler-app \
+              --restart unless-stopped \
               -v ${{ secrets.MOUNT_STORAGE_DIR }} \
               -v ${{ secrets.MOUNT_LOGS_DIR}} \
               -p ${{ secrets.PORT_OUTER }}:${{ secrets.PORT_INNER }} \
               texcompiler-app:latest
+
+            # Проверка живости. Раньше шаг был зеленым, даже если приложение падало
+            # на старте. Проверяем именно ответ по HTTP, а не наличие контейнера:
+            # с --restart unless-stopped упавший контейнер уходит в цикл перезапусков
+            # и в момент проверки может числиться работающим.
+            if command -v curl >/dev/null 2>$1; then
+              alive=0
+              for attempt in $(seq 1 10); do
+                if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${{ secrets.PORT_OUTER}} /"; then
+                  echo "Приложение отвечает (попытка $attempt)"
+                  alive=1
+                  break
+                fi
+                echo "Приложение не отвечает (попытка $attempt), ждем 3 с"
+                sleep 3
+              done
+
+              if [ "$alive" -ne 1]; then
+                echo "Приложение не ответило за 30 секунд. Последние строки лога контейнера:"
+                docker logs --tail 50 texcompiler-app || true
+                exit 1
+              fi
+            else
+              echo "ВНИМАНИЕ: curl на сервере не найден, проверка живости пропущена"
+            fi
+
+            # Чистка только висячих слоев, оставшихся от пересборки. Тегированные образы,
+            # включая texcompiler-base:latest, не затрагиваются. Выполняется после успешной
+            # проверки: при неудачном деплое прежние слои могут еще понадобиться.
+            docker image prune -f
+
