@@ -47,10 +47,10 @@ jobs:
             # на старте. Проверяем именно ответ по HTTP, а не наличие контейнера:
             # с --restart unless-stopped упавший контейнер уходит в цикл перезапусков
             # и в момент проверки может числиться работающим.
-            if command -v curl >/dev/null 2>$1; then
+            if command -v curl >/dev/null 2>&1; then
               alive=0
               for attempt in $(seq 1 10); do
-                if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${{ secrets.PORT_OUTER}} /"; then
+                if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${{ secrets.PORT_OUTER}}/"; then
                   echo "Приложение отвечает (попытка $attempt)"
                   alive=1
                   break
@@ -59,7 +59,7 @@ jobs:
                 sleep 3
               done
 
-              if [ "$alive" -ne 1]; then
+              if [ "$alive" -ne 1 ]; then
                 echo "Приложение не ответило за 30 секунд. Последние строки лога контейнера:"
                 docker logs --tail 50 texcompiler-app || true
                 exit 1
