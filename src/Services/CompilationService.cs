@@ -81,8 +81,23 @@ public class CompilationService : ICompilationService
                 await RunLatexPassAsync(latexArgs, tempDir, 1)
             };
 
-            var asyFiles = Directory.GetFiles(tempDir, "*.asy");
+            // Поиск рекурсивный, как и поиск главного tex-файла в FindMainTexFile. Только
+            // корень видел лишь файлы inline-режима: {jobname}-*.asy пакет генерирует
+            // в рабочем каталоге pdflatex. Принесенные пользователем .asy, разложенные
+            // в архиве по подпапкам, не находились вовсе.
+            var asyFiles = Directory.GetFiles(tempDir, "*.asy", SearchOption.AllDirectories);
             _logger.LogInformation("Found {Count} Asymptote files", asyFiles.Length);
+
+            var nestedAsyFiles = asyFiles
+                .Select(file => Path.GetRelativePath(tempDir, file))
+                .Where(relative => relative.Contains(Path.DirectorySeparatorChar))
+                .ToArray();
+
+            if (nestedAsyFiles.Length > 0)
+            {
+                _logger.LogInformation("Asymptote files outside the root: {Files}",
+                    string.Join(", ", nestedAsyFiles));
+            }
 
             if (asyFiles.Length > 0)
             {
@@ -374,25 +389,78 @@ public class CompilationService : ICompilationService
     /// <summary>
     /// Компилирует все Asymptote файлы за один вызов
     /// </summary>
-    private async Task<ProcessResult> CompileAllAsymptoteFilesAsync(string[] asyFiles, string workingDir)
+    private async Task<ProcessResult> CompileAllAsymptoteFilesAsync(string[] asyFiles, string tempDir)
     {
         if (asyFiles.Length == 0)
             return new ProcessResult { Success = true, Output = "No Asymptote files to compile" };
 
+        var groups = GroupAsymptoteFilesByDirectory(asyFiles, tempDir);
+        var outputs = new List<string>();
+        var allSucceeded = true;
+
+        foreach (var (directory, fileNames) in groups)
+        {
+            var result = await CompileAsymptoteGroupAsync(directory, fileNames);
+            var relativeDirectory = Path.GetRelativePath(tempDir, directory);
+
+            if (!result.Success)
+            {
+                allSucceeded = false;
+                _logger.LogWarning("Asymptote failed in {Directory}: {Output}",
+                    relativeDirectory, result.Output);
+            }
+
+            var text = string.Join(Environment.NewLine,
+                new[] { result.Output, result.Error }.Where(part => !string.IsNullOrWhiteSpace(part)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                outputs.Add($"--- {relativeDirectory} ---{Environment.NewLine}{text}");
+            }
+        }
+
+        return new ProcessResult
+        {
+            Success = allSucceeded,
+            Output = string.Join(Environment.NewLine, outputs)
+        };
+    }
+
+    /// <summary>
+    /// Раскладывает найденные .asy по каталогам, в которых они лежат
+    /// 
+    /// Asy кладет результат в свой рабочий каталог, а includegraphics из tex-файла
+    /// ищет картинку рядом с собой. Один вызов из корня с полными путями сложил бы все 
+    /// картинки в корень, и подключение бы сломалось.
+    /// </summary>
+    internal static List<(string Directory, string[] FileNames)> GroupAsymptoteFilesByDirectory(
+        string[] asyFiles, string tempDir)
+    {
+
+        return asyFiles
+            .GroupBy(file => Path.GetDirectoryName(Path.GetFullPath(file)) ?? Path.GetFullPath(tempDir))
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => (
+                Directory: group.Key,
+                FileNames: group.Select(Path.GetFileName).OfType<string>().OrderBy(name => name, StringComparer.Ordinal).ToArray()))
+            .ToList();
+    }
+
+    private async Task<ProcessResult> CompileAsymptoteGroupAsync(string directory, string[] fileNames)
+    { 
         try
         {
-            // Создаем аргументы командной строки со всеми файлами
-            var fileNames = asyFiles.Select(f => $"\"{Path.GetFileName(f)}\"");
-            var arguments = string.Join(" ", fileNames);
+            var quotedNames = fileNames.Select(name => $"\"{name}\"");
+            var arguments = string.Join(" ", quotedNames);
 
-            _logger.LogDebug("Compiling {Count} Asymptote files: {Files}",
-                asyFiles.Length, string.Join(", ", fileNames));
+            _logger.LogDebug("Compiling {Count} Asymptote files in {Directory}: {Files}",
+                fileNames.Length, directory, string.Join(", ", fileNames));
 
-            return await RunProcessAsync("asy", arguments, workingDir);
+            return await RunProcessAsync("asy", arguments, directory);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error compiling Asymptote files");
+            _logger.LogError(ex, "Error compiling Asymptote files in {Directory}", directory);
             return new ProcessResult
             {
                 Success = false,
