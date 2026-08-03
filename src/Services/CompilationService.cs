@@ -41,6 +41,9 @@ public class CompilationService : ICompilationService
         var originalFileName = Path.GetFileNameWithoutExtension(task.SourceFile);
 
         var mainTexFile = Path.GetFileName(task.SourceFile);
+
+        string? asymptoteOutput = null;
+
         try
         {
             if (Path.GetExtension(task.SourceFile).ToLower() == ".zip")
@@ -84,6 +87,16 @@ public class CompilationService : ICompilationService
             if (asyFiles.Length > 0)
             {
                 var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, tempDir);
+                asymptoteOutput = asyResult.Output;
+
+                // Неуспех asy намеренно не превращается в неуспех компиляции: asy охотно
+                // возвращает ненулевой код на предупреждениях, и часть документов при этом
+                // собирается в пригодный pdf.
+                if (!asyResult.Success)
+                {
+                    _logger.LogWarning("Task {TaskId}: Assymptote failed (exit code {ExitCode}). Output: {Output}",
+                        task.TaskId, asyResult.ExitCode, asyResult.Output);
+                }
             }
 
             passes.Add(await RunLatexPassAsync(latexArgs, tempDir, 2));
@@ -140,7 +153,7 @@ public class CompilationService : ICompilationService
         }
         finally
         {
-            SaveLogToFile(task, mainTexFile, tempDir);
+            SaveLogToFile(task, mainTexFile, tempDir, asymptoteOutput);
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
@@ -436,10 +449,13 @@ public class CompilationService : ICompilationService
     /// производится от главного tex-файла, а не от имени загруженного: для
     /// zip-архива это разные имена, и лог по имени файла не нашелся бы никогда.
     /// </summary>
-    private void SaveLogToFile(CompilationTask task, string mainTexFile, string tempDir)
+    private void SaveLogToFile(CompilationTask task, string mainTexFile, string tempDir, string? asymptoteOutput)
     {
         try
         {
+            var outputLogName = $"{task.TaskId}.log";
+            var outputLogFilePath = Path.Combine(_logDir, outputLogName);
+
             var logFileName = Path.GetFileNameWithoutExtension(mainTexFile) + ".log";
 
             var logFilePath = Path.Combine(tempDir, logFileName);
@@ -452,8 +468,17 @@ public class CompilationService : ICompilationService
                 return;
             }
 
-            var outputLogFilePath = Path.Combine(_logDir, $"{task.TaskId}.log");
             File.Copy(logFilePath, outputLogFilePath, overwrite: true);
+
+            if (string.IsNullOrWhiteSpace(asymptoteOutput))
+            {
+                return;
+            }
+
+            // Дописываем после копирования лога pdflatex, а не вместо него
+            File.AppendAllText(outputLogFilePath,
+                $"{Environment.NewLine}========== ASYMPTOTE OUTPUT =============={Environment.NewLine}{asymptoteOutput}{Environment.NewLine}");
+
             task.LogFilePath = outputLogFilePath;
 
             _logger.LogInformation("Compilation log saved for task {TaskId}", task.TaskId);
