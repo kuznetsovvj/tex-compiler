@@ -64,19 +64,19 @@ public class CompilationService : ICompilationService
             }
 
 
-
-            // Первая компиляция LaTeX
             var latexArgs = $"-interaction=nonstopmode -shell-escape \"{mainTexFile}\"";
-            var latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
+            var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
 
-            if (!latexResult.Success)
+            // Цепочка проходов идёт до конца независимо от кодов возврата. Ранний выход
+            // по ненулевому коду давал ложные отказы: в режиме nonstopmode pdflatex
+            // доходит до конца документа и возвращает ненулевой код при любой ошибке TeX,
+            // включая полностью восстановимые, а PDF при этом обычно пригоден. Хуже того,
+            // отказ первого прохода обрыва цепочку вызовов asy, то есть иллюстрации
+            // не строились вовсе - при том, что смысл трех проходов именно в этом.
+            var passes = new List<ProcessResult>
             {
-                return new CompilationResult
-                {
-                    IsSuccess = false,
-                    ErrorMessage = DescribeLatexFailure(latexResult)
-                };
-            }
+                await RunLatexPassAsync(latexArgs, tempDir, 1)
+            };
 
             var asyFiles = Directory.GetFiles(tempDir, "*.asy");
             _logger.LogInformation("Found {Count} Asymptote files", asyFiles.Length);
@@ -86,31 +86,26 @@ public class CompilationService : ICompilationService
                 var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, tempDir);
             }
 
-            latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
-            if (!latexResult.Success)
-            {
-                return new CompilationResult
-                {
-                    IsSuccess = false,
-                    ErrorMessage = DescribeLatexFailure(latexResult)
-                };
-            }
+            passes.Add(await RunLatexPassAsync(latexArgs, tempDir, 2));
+
+            // Время записи PDF до последнего прохода: файл мог остаться от предыдущего
+            // и тогда его нельзя молча выдать за результат последнего
+            var pdfWriteTimeBeforeLastPass = File.Exists(pdfPath)
+                ? File.GetLastWriteTimeUtc(pdfPath)
+                : (DateTime?)null;
 
             // Параноидальная третья компиляция, чтобы точно создалось оглавление
-            latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
-            if (!latexResult.Success)
-            {
-                return new CompilationResult
-                {
-                    IsSuccess = false,
-                    ErrorMessage = DescribeLatexFailure(latexResult)
-                };
-            }
+            passes.Add(await RunLatexPassAsync(latexArgs, tempDir, 3));
 
-            // Проверяем, создался ли PDF
-            var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
+            // Единственный критерий успеха - наличие PDF
             if (File.Exists(pdfPath))
             {
+                if (pdfWriteTimeBeforeLastPass != null
+                    && File.GetLastWriteTimeUtc(pdfPath) <= pdfWriteTimeBeforeLastPass)
+                {
+                    _logger.LogWarning("Task {TaskId}: last pdflatex pass did not update the PDF, returning the result of an earlier pass", task.TaskId);
+                }
+
                 var outputPdfName = Path.GetFileNameWithoutExtension(task.SourceFile) + ".pdf";
                 var outputPdfPath = Path.Combine(_pdfDir, outputPdfName);
 
@@ -129,7 +124,7 @@ public class CompilationService : ICompilationService
                 return new CompilationResult
                 {
                     IsSuccess = false,
-                    ErrorMessage = "PDF file was not generated"
+                    ErrorMessage = DescribeMissingPdf(passes)
                 };
 
             }
@@ -149,6 +144,48 @@ public class CompilationService : ICompilationService
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
+    }
+
+    /// <summary>
+    /// Один проход pdflatex. Ненулевой код возврата фиксируется в журнале, но
+    /// отказом не считается - решение принимается один раз по факту наличия PDF
+    /// </summary>
+    private async Task<ProcessResult> RunLatexPassAsync(string latexArgs, string tempDir, int pass)
+    {
+        var result = await RunProcessAsync("pdflatex", latexArgs, tempDir);
+
+        if (result.ExitCode == null)
+        {
+            _logger.LogError("pdflatex pass {Pass}: process could not be started", pass);
+        }
+
+        else if (result.ExitCode != 0)
+        {
+            // Ожидаемая ситуация для восстановимых ошибок TeX: продолжаем цепочку
+            _logger.LogWarning("pdflatex pass {Pass} exited with code {ExitCode}, continuing", pass, result.ExitCode);
+        }
+        else
+        {
+            _logger.LogInformation("pdflatex pass {Pass} exited with code 0", pass);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// PDF не создан - надо отличить "pdflatex не запустился" от "запускался, но
+    /// результата нет"
+    /// </summary>
+    private static string DescribeMissingPdf(IReadOnlyList<ProcessResult> passes)
+    {
+        if (passes.Any(pass => pass.ExitCode == null))
+        {
+            return "Не удалось запустить pdflatex";
+        }
+
+        var codes = string.Join(", ", passes.Select((pass, index) => $"Проход {index + 1}: {pass.ExitCode}"));
+
+        return $"PDF не был создан. Коды возврата pdflatex - {codes}. Подробности в логи компиляции.";
     }
 
     private static string DescribeLatexFailure(ProcessResult result)
@@ -257,6 +294,7 @@ public class CompilationService : ICompilationService
             return new ProcessResult
             {
                 Success = process.ExitCode == 0,
+                ExitCode = process.ExitCode,
                 Output = await stdoutTask,
                 Error = await stderrTask
             };
