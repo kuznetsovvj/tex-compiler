@@ -9,13 +9,21 @@ public class CompilationService : ICompilationService
 {
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<CompilationService> _logger;
+    private readonly IConfiguration _configuration;
     private readonly string _logDir;
     private readonly string _pdfDir;
 
-    public CompilationService(IWebHostEnvironment environment, ILogger<CompilationService> logger)
+    private TimeSpan ProcessTimeout => TimeSpan.FromSeconds(
+        _configuration.GetValue<int>("CompilationSettings:ProcessTimeoutSeconds", 600));
+
+    public CompilationService(
+        IWebHostEnvironment environment,
+        ILogger<CompilationService> logger,
+        IConfiguration configuration)
     {
         _environment = environment;
         _logger = logger;
+        _configuration = configuration;
         _logDir = Path.Combine(_environment.WebRootPath, "logs");
         _pdfDir = Path.Combine(_environment.WebRootPath, "pdfs");
 
@@ -66,7 +74,7 @@ public class CompilationService : ICompilationService
                 return new CompilationResult
                 {
                     IsSuccess = false,
-                    ErrorMessage = "LaTeX compilation failed"
+                    ErrorMessage = DescribeLatexFailure(latexResult)
                 };
             }
 
@@ -84,7 +92,7 @@ public class CompilationService : ICompilationService
                 return new CompilationResult
                 {
                     IsSuccess = false,
-                    ErrorMessage = "LaTeX compilation failed"
+                    ErrorMessage = DescribeLatexFailure(latexResult)
                 };
             }
 
@@ -95,7 +103,7 @@ public class CompilationService : ICompilationService
                 return new CompilationResult
                 {
                     IsSuccess = false,
-                    ErrorMessage = "LaTeX compilation failed"
+                    ErrorMessage = DescribeLatexFailure(latexResult)
                 };
             }
 
@@ -141,6 +149,13 @@ public class CompilationService : ICompilationService
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
+    }
+
+    private static string DescribeLatexFailure(ProcessResult result)
+    {
+        return result.TimedOut
+            ? "Превышено время компиляции LaTeX, процесс остановлен"
+            : "Ошибка компиляции LaTeX";
     }
 
     private string FindMainTexFile(string directory)
@@ -207,14 +222,68 @@ public class CompilationService : ICompilationService
         };
 
         using var process = Process.Start(processStartInfo);
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
 
-        return new ProcessResult
+        if (process == null)
         {
-            Success = process.ExitCode == 0,
-            Output = output
-        };
+            _logger.LogError("Failed to start process {Command}. Args: {Arguments}", command, arguments);
+
+            return new ProcessResult
+            {
+                Success = false,
+                Output = $"Не удалось запустить процесс {command}"
+            };
+        }
+
+        var timeout = ProcessTimeout;
+        using var cts = new CancellationTokenSource(timeout);
+
+        try
+        {
+            // Токен передается и в чтение вывода, и в ожидание выхода: процесс может 
+            // зависнуть, ничего не записав, тогда ReadToEndAsync без токена не вернется.
+            var output = await process.StandardOutput.ReadToEndAsync(cts.Token);
+            await process.WaitForExitAsync(cts.Token);
+
+            return new ProcessResult
+            {
+                Success = process.ExitCode == 0,
+                Output = output
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogError("Process {Command} exceeded the {Timeout}s limit and will be killed. Arguments {Arguments}",
+                command, timeout.TotalSeconds, arguments);
+
+            KillProcessTree(process, command);
+
+            return new ProcessResult
+            {
+                Success = false,
+                TimedOut = true,
+                Output = $"Процесс {command} превысил лимит {timeout.TotalSeconds:0} c и был принудительно завершен"
+            };
+        }
+    }
+
+    /// <summary>
+    /// Завершает процесс вместе с потомками: pdflatex c -shell-escape порождает дочерние процессы и убийство одного родителя
+    /// оставило бы их работать
+    /// </summary>
+    private void KillProcessTree(Process process, string command)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Процесс мог завершиться сам собой между проверкой и вызовом Kill
+            _logger.LogWarning(ex, "Failed to kill process {Command}", command);
+        }
     }
 
     /// <summary>
