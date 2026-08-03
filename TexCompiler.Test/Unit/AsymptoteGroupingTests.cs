@@ -26,7 +26,7 @@
         }
 
         [Fact]
-        public void FilesInSubdirectories_AreGroupedByThierOwnDirectory()
+        public void FilesInSubdirectories_AreGroupedByTheirOwnDirectory()
         {
             var figures = Path.Combine(TempDir, "figures");
             var images = Path.Combine(TempDir, "images", "extra");
