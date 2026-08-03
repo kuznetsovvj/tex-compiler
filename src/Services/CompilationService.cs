@@ -208,7 +208,7 @@ public class CompilationService : ICompilationService
         }
     }
 
-    private async Task<ProcessResult> RunProcessAsync(string command, string arguments, string workingDir)
+    internal async Task<ProcessResult> RunProcessAsync(string command, string arguments, string workingDir)
     {
         var processStartInfo = new ProcessStartInfo
         {
@@ -237,17 +237,28 @@ public class CompilationService : ICompilationService
         var timeout = ProcessTimeout;
         using var cts = new CancellationTokenSource(timeout);
 
+        // Оба потока начинают читаться до ожидания выхода. Перенаправленный поток - это
+        // pipe с буфером ограниченного размера (обычно 64 Кб). Пока буфер не заполнен,
+        // процесс пишет и работает дальше, а как только заполнится - очередная
+        // запись блокируется до того, как кто-нибудь прочитает данные с другого конца.
+        // Пока читался только stdout, процесс, пишущий много в stderr, вставал намерство:
+        // родитель ждал завершения, процесс ждал возможности запись.
+
+        // Токен передается и в чтение вывода, и в ожидание выхода: процесс может 
+        // зависнуть, ничего не записав, тогда ReadToEndAsync без токена не вернется.
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+        
+
         try
         {
-            // Токен передается и в чтение вывода, и в ожидание выхода: процесс может 
-            // зависнуть, ничего не записав, тогда ReadToEndAsync без токена не вернется.
-            var output = await process.StandardOutput.ReadToEndAsync(cts.Token);
             await process.WaitForExitAsync(cts.Token);
 
             return new ProcessResult
             {
                 Success = process.ExitCode == 0,
-                Output = output
+                Output = await stdoutTask,
+                Error = await stderrTask
             };
         }
         catch (OperationCanceledException)
@@ -257,12 +268,35 @@ public class CompilationService : ICompilationService
 
             KillProcessTree(process, command);
 
+            await DrainAsync(stdoutTask);
+            await DrainAsync(stderrTask);
+
             return new ProcessResult
             {
                 Success = false,
                 TimedOut = true,
                 Output = $"Процесс {command} превысил лимит {timeout.TotalSeconds:0} c и был принудительно завершен"
             };
+        }
+    }
+
+    /// <summary>
+    /// Дожидается отмененной задачи чтения, поглощая исключения. Нужна только на пути таймаута
+    /// Данные из отмененного ReadToAsync уже недоступны
+    /// </summary>
+    private static async Task DrainAsync(Task<string> readTask)
+    {
+        try
+        {
+            await readTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // Чтение отменено вместе с процессом
+        }
+        catch (Exception)
+        {
+            // Поток мог закрыться вместе с убитым процессом
         }
     }
 
