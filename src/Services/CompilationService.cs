@@ -42,6 +42,12 @@ public class CompilationService : ICompilationService
 
         var mainTexFile = Path.GetFileName(task.SourceFile);
 
+        // Рабочий каталог pdflatex - каталог главного tex-файла, а не корень tempDir.
+        // TeX разрешает относительные пути из \input и \includegraphics относительно
+        // рабочего каталога процесса, а не относительно обрабатываемого файла.
+        var texDir = tempDir;
+
+
         string? asymptoteOutput = null;
 
         try
@@ -49,9 +55,9 @@ public class CompilationService : ICompilationService
             if (Path.GetExtension(task.SourceFile).ToLower() == ".zip")
             {
                 ExtractZipArchive(task.SourceFile, tempDir);
-                mainTexFile = FindMainTexFile(tempDir);
+                var mainTexPath = FindMainTexFile(tempDir);
 
-                if (string.IsNullOrEmpty(mainTexFile))
+                if (string.IsNullOrEmpty(mainTexPath))
                 {
                     return new CompilationResult
                     {
@@ -60,6 +66,10 @@ public class CompilationService : ICompilationService
                     };
 
                 }
+                // FindMainTexFile ищет рекурсивно и возвращает полный путь
+                texDir = Path.GetDirectoryName(mainTexPath) ?? tempDir;
+                mainTexFile = Path.GetFileName(mainTexPath);
+
             }
             else
             {
@@ -68,7 +78,7 @@ public class CompilationService : ICompilationService
 
 
             var latexArgs = $"-interaction=nonstopmode -shell-escape \"{mainTexFile}\"";
-            var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
+            var pdfPath = Path.Combine(texDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
 
             // Цепочка проходов идёт до конца независимо от кодов возврата. Ранний выход
             // по ненулевому коду давал ложные отказы: в режиме nonstopmode pdflatex
@@ -78,7 +88,7 @@ public class CompilationService : ICompilationService
             // не строились вовсе - при том, что смысл трех проходов именно в этом.
             var passes = new List<ProcessResult>
             {
-                await RunLatexPassAsync(latexArgs, tempDir, 1)
+                await RunLatexPassAsync(latexArgs, texDir, 1)
             };
 
             // Поиск рекурсивный, как и поиск главного tex-файла в FindMainTexFile. Только
@@ -101,7 +111,7 @@ public class CompilationService : ICompilationService
 
             if (asyFiles.Length > 0)
             {
-                var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, tempDir);
+                var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, texDir);
                 asymptoteOutput = asyResult.Output;
 
                 // Неуспех asy намеренно не превращается в неуспех компиляции: asy охотно
@@ -114,7 +124,7 @@ public class CompilationService : ICompilationService
                 }
             }
 
-            passes.Add(await RunLatexPassAsync(latexArgs, tempDir, 2));
+            passes.Add(await RunLatexPassAsync(latexArgs, texDir, 2));
 
             // Время записи PDF до последнего прохода: файл мог остаться от предыдущего
             // и тогда его нельзя молча выдать за результат последнего
@@ -123,7 +133,7 @@ public class CompilationService : ICompilationService
                 : (DateTime?)null;
 
             // Параноидальная третья компиляция, чтобы точно создалось оглавление
-            passes.Add(await RunLatexPassAsync(latexArgs, tempDir, 3));
+            passes.Add(await RunLatexPassAsync(latexArgs, texDir, 3));
 
             // Единственный критерий успеха - наличие PDF
             if (File.Exists(pdfPath))
@@ -157,6 +167,17 @@ public class CompilationService : ICompilationService
 
             }
         }
+        catch (InvalidDataException ex)
+        {
+            // Сюда попадают отклоненные архивы
+            _logger.LogWarning(ex, "Rejected archive for task {TaskId}: {Reason}", task.TaskId, ex.Message);
+
+            return new CompilationResult
+            {
+                IsSuccess = false,
+                ErrorMessage = $"Не удалось распаковать архив: {ex.Message}"
+            };
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Compilation error for task {TaskId}", task.TaskId);
@@ -168,7 +189,7 @@ public class CompilationService : ICompilationService
         }
         finally
         {
-            SaveLogToFile(task, mainTexFile, tempDir, asymptoteOutput);
+            SaveLogToFile(task, mainTexFile, texDir, asymptoteOutput);
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
@@ -223,7 +244,12 @@ public class CompilationService : ICompilationService
             : "Ошибка компиляции LaTeX";
     }
 
-    private string FindMainTexFile(string directory)
+    /// <summary>
+    /// Ищет главный tex-файл рекурсивно и возвращает полный путь. От его каталога
+    /// зависит рабочий каталог pdflatex, поэтому метод покрыт тестами и открыт как 
+    /// internal
+    /// </summary>
+    internal static string FindMainTexFile(string directory)
     {
         var texFiles = Directory.GetFiles(directory, "*.tex", SearchOption.AllDirectories);
 
