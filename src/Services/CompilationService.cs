@@ -167,6 +167,17 @@ public class CompilationService : ICompilationService
 
             }
         }
+        catch (InvalidDataException ex)
+        {
+            // Сюда попадают отклоненные архивы
+            _logger.LogWarning(ex, "Rejected archive for task {TaskId}: {Reason}", task.TaskId, ex.Message);
+
+            return new CompilationResult
+            {
+                IsSuccess = false,
+                ErrorMessage = $"Не удалось распаковать архив: {ex.Message}"
+            };
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Compilation error for task {TaskId}", task.TaskId);
