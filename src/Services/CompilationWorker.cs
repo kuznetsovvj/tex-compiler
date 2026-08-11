@@ -32,7 +32,7 @@ namespace TexCompiler.Services
             {
                 await foreach (var task in _queue.ReadAllAsync(cancellationToken))
                 {
-                    await ProcessTaskAsync(task);
+                    await ProcessTaskAsync(task, cancellationToken);
                 }
             }
             catch (OperationCanceledException)
@@ -43,24 +43,40 @@ namespace TexCompiler.Services
             _logger.LogInformation("Compilation worker stopped");
         }
 
-        private async Task ProcessTaskAsync(CompilationTask task)
+        private async Task ProcessTaskAsync(CompilationTask task, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Processing task: {TaskId}", task.TaskId);
 
             try
             {
-                var result = await _compilationService.CompileAsync(task);
+                var result = await _compilationService.CompileAsync(task).WaitAsync(cancellationToken);
 
                 _taskStorage.UpdateTask(task.SetCompleted(result));
                 _logger.LogInformation("Task {TaskId} completed with status: {Status}",
                     task.TaskId, task.TaskStatus);
             }
+            catch (OperationCanceledException)
+            {
+                MarkInterrupted(task);
+            }
+
             catch (Exception ex)
             {
                 _taskStorage.UpdateTask(task.SetFailed(ex));
                 _logger.LogError(ex, "Error processing task: {TaskId}", task.TaskId);
             }
 
+        }
+
+        private void MarkInterrupted(CompilationTask task)
+        {
+            _taskStorage.UpdateTask(task.SetCompleted(new CompilationResult
+            {
+                IsSuccess = false,
+                ErrorMessage = "Обработка прервана перезапуском сервиса. Отправьте файл заново."
+            }));
+
+            _logger.LogWarning("Task {TaskId} interrupted by service shutdown", task.TaskId);
         }
 
     }

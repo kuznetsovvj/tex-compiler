@@ -185,6 +185,43 @@ namespace TexCompiler.UnitTests.Services
         }
 
         [Fact]
+        public async Task TaskInterruptedByShutdown_IsMarkedFailedWithExplanation()
+        {
+            var started = new TaskCompletionSource();
+            var release = new TaskCompletionSource();
+
+            _compilationServiceMock.Setup(c => c.CompileAsync(It.IsAny<CompilationTask>()))
+                .Returns(async (CompilationTask _) =>
+                {
+                    started.TrySetResult();
+                    await release.Task;
+
+                    return new CompilationResult { IsSuccess = true };
+                });
+
+            await _worker.StartAsync(CancellationToken.None);
+            try
+            {
+                var task = new CompilationTask("/tmp/storage/a/doc.tex");
+                await _queue.EnqueueAsync(task);
+                await started.Task.WaitAsync(Timeout);
+
+                Assert.Equal(CompilationTaskStatus.Processing, task.TaskStatus);
+
+                await _worker.StopAsync(CancellationToken.None).WaitAsync(Timeout);
+
+                Assert.Equal(CompilationTaskStatus.Failed, task.TaskStatus);
+                Assert.Contains("перезапуск", task.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+                _taskStorageMock.Verify(t => t.UpdateTask(task), Times.AtLeast(2));
+            }
+            finally
+            {
+                release.TrySetResult();
+            }
+
+        }
+
+        [Fact]
         public async Task Stop_DoesNotHangWhenQueueIsEmpty()
         {
             await _worker.StartAsync(CancellationToken.None);
