@@ -12,8 +12,6 @@ namespace TexCompiler.Services
 
 		CompilationTask? GetTask(Guid taskId);
 
-		CompilationTask? GetNextTask();
-
 		void UpdateTask(CompilationTask task);
 
 		List<CompilationTask> GetAllTasks();

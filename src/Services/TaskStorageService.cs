@@ -5,34 +5,18 @@ namespace TexCompiler.Services
 {
     public class TaskStorageService : ITaskStorageService
     {
-        private readonly ConcurrentQueue<CompilationTask> _taskQueue;
         private readonly ConcurrentDictionary<Guid, CompilationTask> _taskDictionary;
         private readonly ILogger<TaskStorageService> _logger;
 
         public TaskStorageService(ILogger<TaskStorageService> logger)
         {
-            _taskQueue = new ConcurrentQueue<CompilationTask>();
             _taskDictionary = new ConcurrentDictionary<Guid, CompilationTask>();
             _logger = logger;
         }
 
         public void AddTask(CompilationTask task)
         {
-            _taskQueue.Enqueue(task);
             _taskDictionary[task.TaskId] = task;
-        }
-
-        /// <summary>
-        /// Получает следующую задачу из очереди (удаляя ее)
-        /// </summary>
-        public CompilationTask? GetNextTask()
-        {
-            if (_taskQueue.TryDequeue(out var task))
-            {
-                _logger.LogDebug("Task retrieved from queue: {TaskId}", task.TaskId);
-                return task;
-            }
-            return null;
         }
 
         /// <summary>
