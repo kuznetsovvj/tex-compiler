@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using TexCompiler.Filters;
 using TexCompiler.Models;
 using TexCompiler.Services;
 
@@ -11,23 +12,26 @@ namespace TexCompiler.Controllers
 		private readonly ITaskStorageService _taskStorageService;
 		private readonly IWebHostEnvironment _environment;
 		private readonly ILogger<ApiController> _logger;
-
-		private const int _fileMaxSizeMb = 20;
+		private readonly IConfiguration _configuration;
+		
 
 		public ApiController (
 			CompilationManagerService compilationManagerService,
 			IWebHostEnvironment environment,
 			ITaskStorageService taskStorageService,
-			ILogger<ApiController> logger)
+			ILogger<ApiController> logger,
+			IConfiguration configuration)
 		{
 			_compilationManagerService = compilationManagerService;
 			_environment = environment;
 			_taskStorageService = taskStorageService;
 			_logger = logger;
+			_configuration = configuration;
 		}
 
 		[HttpPost]
 		[Route("api/upload")]
+		[ServiceFilter(typeof(UploadSizeLimitFilter))]
 		public async Task<ActionResult<ApiResponse<UploadResponse>>> UploadFile([FromForm] UploadRequest request)
 		{
 
@@ -58,12 +62,12 @@ namespace TexCompiler.Controllers
 					});
 				}
 
-                if (request.TexFile.Length > _fileMaxSizeMb * 1024 * 1024)
+				if (request.TexFile.Length > UploadLimits.GetMaxFileSizeMegabytes(_configuration))
 				{
 					return BadRequest(new ApiResponse<UploadResponse>
 					{
 						Success = false,
-						Error = $"Размер файла не должен превышать {_fileMaxSizeMb} Мб"
+						Error = $"Размер файла не должен превышать {UploadLimits.GetMaxFileSizeMegabytes} Мб"
 					});
 				}
 

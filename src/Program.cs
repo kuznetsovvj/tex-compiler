@@ -1,8 +1,32 @@
+using Microsoft.AspNetCore.Mvc;
+using TexCompiler.Filters;
+using TexCompiler.Models;
 using TexCompiler.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
+builder.Services.AddScoped<UploadSizeLimitFilter>();
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        var errors = context.ModelState.Values
+            .SelectMany(state => state.Errors)
+            .Select(error => error.ErrorMessage)
+            .Where(message => !string.IsNullOrWhiteSpace(message))
+            .ToList();
+
+        return new BadRequestObjectResult(new ApiResponse<object?>
+        {
+            Success = false,
+            Error = errors.Count > 0
+                ? $"Ошибка валидации: {string.Join(", ", errors)}"
+                : "Запрос не прошел проверку"
+        });
+    };
+});
+
 
 builder.Services.AddSingleton<ITaskStorageService, TaskStorageService>();
 builder.Services.AddSingleton<CompilationManagerService>();
