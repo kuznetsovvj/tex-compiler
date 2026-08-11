@@ -4,13 +4,14 @@ using TexCompiler.Models;
 using TexCompiler.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics.Contracts;
 
 namespace TexCompiler.UnitTests.Services
 {
     public class CompilationManagerServiceTests
     {
         private readonly Mock<ITaskStorageService> _taskStorageMock;
-        private readonly Mock<ICompilationService> _compilationServiceMock;
+        private readonly CompilationQueue _queue;
         private readonly Mock<IWebHostEnvironment> _environmentMock;
         private readonly Mock<ILogger<CompilationManagerService>> _loggerMock;
         private readonly CompilationManagerService _service;
@@ -19,7 +20,7 @@ namespace TexCompiler.UnitTests.Services
         public CompilationManagerServiceTests()
         {
             _taskStorageMock = new Mock<ITaskStorageService>();
-            _compilationServiceMock = new Mock<ICompilationService>();
+            _queue = new CompilationQueue();
             _environmentMock = new Mock<IWebHostEnvironment>();
             _loggerMock = new Mock<ILogger<CompilationManagerService>>();
 
@@ -32,7 +33,9 @@ namespace TexCompiler.UnitTests.Services
 
             _service = new CompilationManagerService(
                 _taskStorageMock.Object,
-                _compilationServiceMock.Object,
+                _queue,
+
+
                 _environmentMock.Object,
                 _loggerMock.Object);
         }
@@ -83,6 +86,28 @@ namespace TexCompiler.UnitTests.Services
             // Проверяем что директория storage создана (даже при ошибке)
             var storageDir = Path.Combine(_tempTestDir, "storage");
             Assert.True(Directory.Exists(storageDir));
+        }
+
+        [Fact]
+        public async Task SubmitTask_PutsTaskInQueue_ForTheWorkerPickUp()
+        {
+            var fileMock = new Mock<IFormFile>();
+            fileMock.Setup(f => f.FileName).Returns("diploma.tex");
+            fileMock.Setup(f => f.CopyToAsync(It.IsAny<Stream>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            var taskId = await _service.SubmitTaskAsync(fileMock.Object);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var queued = new List<CompilationTask>();
+
+            await foreach (var task in _queue.ReadAllAsync(cts.Token))
+            {
+                queued.Add(task);
+                break;
+            }
+
+            Assert.Equal(taskId, Assert.Single(queued).TaskId);
         }
 
         [Fact]

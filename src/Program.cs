@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Threading.RateLimiting;
 using TexCompiler.Filters;
 using TexCompiler.Models;
 using TexCompiler.Services;
@@ -29,8 +30,10 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
 
 
 builder.Services.AddSingleton<ITaskStorageService, TaskStorageService>();
+builder.Services.AddSingleton<CompilationQueue>();
 builder.Services.AddSingleton<CompilationManagerService>();
 builder.Services.AddSingleton<ICompilationService, CompilationService>();
+builder.Services.AddHostedService<CompilationWorker>();
 builder.Services.AddHostedService<CleanupService>();
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
