@@ -54,18 +54,32 @@ namespace TexCompiler.Services
             }
         }
 
+        /// <summary>
+        /// Каждая загрузка кладется в собственный подкаталог со случайным именем.
+        /// Уникальность обеспечивает каталог, поэтому имя самого файла остается читаемым -
+        /// от него зависит имя, под которым пользователь получит результат
+        /// </summary>
+        /// <param name="sourceFileName"></param>
+        /// <returns></returns>
         private string GenerateFilePath(string sourceFileName)
         {
-            var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss");
+            var originalName = Path.GetFileName(sourceFileName);
+
             var safeFileName = Path.GetFileNameWithoutExtension(sourceFileName)
                 .Replace(" ", "_")
                 .Replace("/", "_")
                 .Replace("\\", "_");
 
-            var fileName = $"{timestamp}_{safeFileName}" + Path.GetExtension(sourceFileName);
-            var filePath = Path.Combine(_storagePath, fileName);
+            // Имя из одних точек (".", "..") дало бы путь на сам каталог загрузки
+            if (string.IsNullOrWhiteSpace(safeFileName) || safeFileName.Trim('.').Length == 0)
+            {
+                safeFileName = "document";
+            }
 
-            return filePath;
+            var uploadDir = Path.Combine(_storagePath, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(uploadDir);
+            
+            return Path.Combine(uploadDir, safeFileName + Path.GetExtension(originalName));
         }
 
 

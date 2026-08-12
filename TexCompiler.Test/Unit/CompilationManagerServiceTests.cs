@@ -4,7 +4,6 @@ using TexCompiler.Models;
 using TexCompiler.Services;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
-using System.Diagnostics.Contracts;
 
 namespace TexCompiler.UnitTests.Services
 {
@@ -111,6 +110,42 @@ namespace TexCompiler.UnitTests.Services
         }
 
         [Fact]
+        public async Task SubmitTask_TwoFilesWhisSameName_ProduceDifferentPaths()
+        {
+            var capturedTasks = new List<CompilationTask>();
+            _taskStorageMock.Setup(t => t.AddTask(It.IsAny<CompilationTask>()))
+                .Callback<CompilationTask>(task => capturedTasks.Add(task));
+            await _service.SubmitTaskAsync(CreateFile("diploma.tex"));
+            await _service.SubmitTaskAsync(CreateFile("diploma.tex"));
+
+            Assert.Equal(2, capturedTasks.Count);
+            Assert.NotEqual(capturedTasks[0].SourceFile, capturedTasks[1].SourceFile);
+            Assert.True(File.Exists(capturedTasks[0].SourceFile));
+            Assert.True(File.Exists(capturedTasks[1].SourceFile));
+
+            Assert.Equal("diploma.tex", Path.GetFileName(capturedTasks[0].SourceFile));
+            Assert.Equal("diploma.tex", Path.GetFileName(capturedTasks[1].SourceFile));
+        }
+
+        [Theory]
+        [InlineData("..")]
+        [InlineData(".")]
+        [InlineData(".tex")]
+        public async Task SubmitTask_DegenerateFileName_StillWritesFileInsideStorage(string fileName)
+        {
+            var capturedTasks = new List<CompilationTask>();
+            _taskStorageMock.Setup(t => t.AddTask(It.IsAny<CompilationTask>()))
+                .Callback<CompilationTask>(task => capturedTasks.Add(task));
+            await _service.SubmitTaskAsync(CreateFile(fileName));
+
+            var storageDir = Path.Combine(_tempTestDir, "storage");
+            var sourceFile = Assert.Single(capturedTasks).SourceFile;
+
+            Assert.True(File.Exists(sourceFile));
+            Assert.StartsWith(storageDir + Path.DirectorySeparatorChar, Path.GetFullPath(sourceFile));
+        }
+
+        [Fact]
         public void GetTaskStatus_ExistingTask_ReturnsTask()
         {
             // Arrange
@@ -150,6 +185,16 @@ namespace TexCompiler.UnitTests.Services
 
             // Проверяем что тестовая директория не была затронута этим тестом
             Assert.True(Directory.Exists(_tempTestDir));
+        }
+
+        private static IFormFile CreateFile(string fileName)
+        {
+            var fileMock = new Mock<IFormFile>();
+            fileMock.Setup(f => f.FileName).Returns(fileName);
+            fileMock.Setup(f => f.CopyToAsync(It.IsAny<Stream>(), It.IsAny<CancellationToken>()))
+                .Returns(Task.CompletedTask);
+
+            return fileMock.Object;
         }
 
         public void Dispose()
