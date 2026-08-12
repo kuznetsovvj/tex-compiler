@@ -139,6 +139,7 @@
                     .Where(file => File.GetLastWriteTimeUtc(file) < cutoffTime)
                     .ToList();
 
+                var referencedPaths = GetReferencedPdfPaths();
                 var deletedCount = 0;
 
                 foreach (var file in pdfFiles)
@@ -146,7 +147,7 @@
                     try
                     {
                         // Проверяем, не ссылается ли на этот файл активная задача
-                        if (IsPdfFileReferenced(file))
+                        if (referencedPaths.Contains(Path.GetFullPath(file)))
                         {
                             _logger.LogDebug("Skipping referenced PDF file: {File}", file);
                             continue;
@@ -154,7 +155,7 @@
 
                         File.Delete(file);
                         deletedCount++;
-                        _logger.LogDebug("Deleted PDF file: {File}", Path.GetFileName(file));
+                        _logger.LogInformation("Deleted orphaned PDF file: {File}", Path.GetFileName(file));
                     }
                     catch (Exception ex)
                     {
@@ -242,27 +243,33 @@
         }
 
         /// <summary>
-        /// Проверяет, ссылается ли на PDF файл какая-либо активная задача
+        /// Собирает пути к PDF файлам, на которые ссылаются существующие задачи
         /// </summary>
-        private bool IsPdfFileReferenced(string pdfFilePath)
+        /// <returns></returns>
+        private HashSet<string> GetReferencedPdfPaths()
         {
-            try
+            var referenced = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var task in _taskStorage.GetAllTasks())
             {
-                var fileName = Path.GetFileName(pdfFilePath);
-                if (Guid.TryParse(Path.GetFileNameWithoutExtension(fileName), out var taskId))
+                if (string.IsNullOrEmpty(task.PdfFilePath))
                 {
-                    var task = _taskStorage.GetTask(taskId);
-                    // Если задача существует и была создана недавно (меньше чем PdfRetentionTime),
-                    // то файл еще может быть нужен
-                    return task != null && task.CreatedAt > DateTime.UtcNow - PdfRetentionTime;
+                    continue;
                 }
-                return false;
+
+                try
+                {
+                    referenced.Add(task.PdfFilePath);
+                }
+                catch (Exception ex)
+                {
+                    // Некорректный путь в задаче не должен ронять всю чистку
+                    _logger.LogWarning(ex, "Invalid PDF path in task {TaskId}: {Path}",
+                        task.TaskId, task.PdfFilePath);
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Error checking if PDF file is referenced: {File}", pdfFilePath);
-                return true; // В случае ошибки лучше не удалять файл
-            }
+
+            return referenced;
         }
     }
 }
