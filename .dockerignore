@@ -1,0 +1,30 @@
+# История и служебные каталоги
+.git
+.gitingore
+.gitattributes
+.github
+.vs
+.vscode
+
+# Локальные артефакты сборки
+**/bin
+**/obj
+*.user
+*.suo
+_NCrunch*
+
+# Рабочие каталоги приложения. Dockerfile.app создает их сам, а на сервере
+# они еще и смонтированы томами с хоста - их содержимое к сборке образа
+# отношения не имеет
+storage
+src/storage
+logs
+src/wwwroot/pdfs
+src/wwwroot/logs
+src/artifacts
+
+# Документация в образе не нужна
+*.md
+
+# Прочее
+*.log
