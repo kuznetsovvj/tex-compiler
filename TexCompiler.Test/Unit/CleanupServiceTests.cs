@@ -28,6 +28,8 @@ namespace TexCompiler.UnitTests.Services
             environmentMock.Setup(e => e.ContentRootPath).Returns(_contentRoot);
 
             _pdfDir = ArtifactPath.GetPdfDirectory(environmentMock.Object);
+            Directory.CreateDirectory(_pdfDir);
+            Directory.CreateDirectory(_storageDir);
 
             _taskStorageService = new Mock<ITaskStorageService>();
             _taskStorageService.Setup(t => t.GetAllTasks()).Returns(new List<CompilationTask>());
