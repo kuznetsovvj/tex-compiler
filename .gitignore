@@ -134,4 +134,6 @@ $RECYCLE.BIN/
 _NCrunch*
 /src/.vs
 /src/storage
+/src/artifacts
 /src/wwwroot/pdfs
+/src/wwwroot/logs
