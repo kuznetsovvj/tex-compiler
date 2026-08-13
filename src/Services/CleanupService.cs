@@ -1,4 +1,6 @@
-﻿namespace TexCompiler.Services
+﻿using TexCompiler.Models;
+
+namespace TexCompiler.Services
 {
     public class CleanupService : BackgroundService
     {
@@ -19,6 +21,12 @@
 
         private TimeSpan TaskRetentionTime => TimeSpan.FromHours(
             _configuration.GetValue<int>("CleanupSettings:TaskRetentionHours", 2));
+
+        /// По умолчанию совпадает со сроком жизни задачи и заведомо не меньше срока
+        /// хранения PDF: исходник не должен исчезать раньше собранного из него результата,
+        /// иначе повторить компиляцию при разборе инцидента будет нечем.
+        private TimeSpan SourceRetentionTime => TimeSpan.FromMinutes(
+            _configuration.GetValue<int>("CleanupSettings:SourceRetentionMinutes", 120));
 
         public CleanupService(
             ILogger<CleanupService> logger,
@@ -56,7 +64,7 @@
         }
 
         /// <summary>
-        /// Выполняет очистку: временные директории, PDF, таски в очередях
+        /// Выполняет очистку: временные директории, PDF, загруженные исходники, таски в очередях
         /// </summary>
         public void PerformFullCleanup()
         {
@@ -65,8 +73,8 @@
             {
                 CleanupTempDirectories();
                 CleanupOldPdfFiles();
+                CleanupOldSourceFiles();
                 CleanupOldTasks();
-
             }
             catch (Exception ex)
             {
@@ -139,6 +147,7 @@
                     .Where(file => File.GetLastWriteTimeUtc(file) < cutoffTime)
                     .ToList();
 
+                var referencedPaths = GetReferencedPaths(task => task.PdfFilePath);
                 var deletedCount = 0;
 
                 foreach (var file in pdfFiles)
@@ -146,7 +155,7 @@
                     try
                     {
                         // Проверяем, не ссылается ли на этот файл активная задача
-                        if (IsPdfFileReferenced(file))
+                        if (referencedPaths.Contains(Path.GetFullPath(file)))
                         {
                             _logger.LogDebug("Skipping referenced PDF file: {File}", file);
                             continue;
@@ -154,7 +163,7 @@
 
                         File.Delete(file);
                         deletedCount++;
-                        _logger.LogDebug("Deleted PDF file: {File}", Path.GetFileName(file));
+                        _logger.LogInformation("Deleted orphaned PDF file: {File}", Path.GetFileName(file));
                     }
                     catch (Exception ex)
                     {
@@ -220,6 +229,82 @@
             }
         }
 
+        private int CleanupOldSourceFiles()
+        {
+            try
+            {
+                var storagePath = Path.Combine(_environment.ContentRootPath, "storage");
+                if (!Directory.Exists(storagePath))
+                {
+                    return 0;
+                }
+
+                var cutoffTime = DateTime.UtcNow - SourceRetentionTime;
+                // Каждая загрузка лежит в своем подкаталоге storage/{guid}/. Отдельные
+                // файлы в корне остались от прежней раскладки: каталог смонтирован как том
+                // с хоста и переживает пересоздание контейнера, так что их тоже надо убрать.
+                var candidates = Directory.GetDirectories(storagePath)
+                    .Where(dir => Directory.GetLastWriteTimeUtc(dir) < cutoffTime)
+                    .Concat(Directory.GetFiles(storagePath))
+                    .Where(file => File.GetLastWriteTimeUtc(file) < cutoffTime)
+                    .ToList();
+
+                var referencedSource = GetReferencedPaths(task => task.SourceFile);
+                var referencedDirectories = new HashSet<string>(StringComparer.Ordinal);
+
+                foreach (var source in referencedSource)
+                {
+                    var directory = Path.GetDirectoryName(source);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        referencedDirectories.Add(directory);
+                    }
+                }
+
+                var deletedCount = 0;
+                foreach (var path in candidates)
+                {
+                    try
+                    {
+                        var fullPath = Path.GetFullPath(path);
+
+                        // Задача в статуте Queued или Processing тоже есть в списке задач
+                        // поэтому её исходник считается нужным и срок хранения его не касается
+                        if (referencedSource.Contains(fullPath) || referencedDirectories.Contains(fullPath))
+                        {
+                            _logger.LogDebug("Skipping referenced source file: {Path}", path);
+                            continue;
+                        }
+
+                        if (Directory.Exists(fullPath))
+                        {
+                            Directory.Delete(fullPath, recursive: true);
+                        }
+                        else
+                        {
+                            File.Delete(fullPath);
+                        }
+
+                        deletedCount++;
+                        _logger.LogInformation("Deleted orphaned source file: {Path}", Path.GetFileName(fullPath));
+                    }
+                    catch (Exception)
+                    {
+                        _logger.LogWarning("Failed to delete source file: {Path}", path);
+                    }
+                }
+                _logger.LogInformation("Source file cleanup: {Deleted}/{Total}",
+                    deletedCount, candidates.Count);
+
+                return deletedCount;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during source file cleanup");
+                return 0;
+            }
+        }
+
         /// <summary>
         /// Проверяет, используется ли директория
         /// </summary>
@@ -242,27 +327,35 @@
         }
 
         /// <summary>
-        /// Проверяет, ссылается ли на PDF файл какая-либо активная задача
+        /// Собирает пути к PDF файлам или к исходникам, смотря какое свойство передали,
+        /// которые еще упоминаются в задачах
         /// </summary>
-        private bool IsPdfFileReferenced(string pdfFilePath)
+        /// <returns></returns>
+        private HashSet<string> GetReferencedPaths(Func<CompilationTask, string?> pathSelector)
         {
-            try
+            var referenced = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var task in _taskStorage.GetAllTasks())
             {
-                var fileName = Path.GetFileName(pdfFilePath);
-                if (Guid.TryParse(Path.GetFileNameWithoutExtension(fileName), out var taskId))
+                var path = pathSelector(task);
+                if (string.IsNullOrEmpty(path))
                 {
-                    var task = _taskStorage.GetTask(taskId);
-                    // Если задача существует и была создана недавно (меньше чем PdfRetentionTime),
-                    // то файл еще может быть нужен
-                    return task != null && task.CreatedAt > DateTime.UtcNow - PdfRetentionTime;
+                    continue;
                 }
-                return false;
+
+                try
+                {
+                    referenced.Add(path);
+                }
+                catch (Exception ex)
+                {
+                    // Некорректный путь в задаче не должен ронять всю чистку
+                    _logger.LogWarning(ex, "Invalid path in task {TaskId}: {Path}",
+                        task.TaskId, path);
+                }
             }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Error checking if PDF file is referenced: {File}", pdfFilePath);
-                return true; // В случае ошибки лучше не удалять файл
-            }
+
+            return referenced;
         }
     }
 }

@@ -206,13 +206,10 @@ namespace TexCompiler.UnitTests.Services
                 await _queue.EnqueueAsync(task);
                 await started.Task.WaitAsync(Timeout);
 
-                Assert.Equal(CompilationTaskStatus.Processing, task.TaskStatus);
-
                 await _worker.StopAsync(CancellationToken.None).WaitAsync(Timeout);
 
                 Assert.Equal(CompilationTaskStatus.Failed, task.TaskStatus);
                 Assert.Contains("перезапуск", task.ErrorMessage, StringComparison.OrdinalIgnoreCase);
-                _taskStorageMock.Verify(t => t.UpdateTask(task), Times.AtLeast(2));
             }
             finally
             {

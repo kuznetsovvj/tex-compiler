@@ -1,10 +1,9 @@
 ﻿using Microsoft.Extensions.Logging;
 using Moq;
-using System.ComponentModel.DataAnnotations;
 using TexCompiler.Models;
 using TexCompiler.Services;
 
-namespace TexCompiler.UnitTests.Service
+namespace TexCompiler.UnitTests.Services
 {
     public class TaskStorageServiceTests
     {

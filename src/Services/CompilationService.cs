@@ -158,8 +158,7 @@ public class CompilationService : ICompilationService
                     _logger.LogWarning("Task {TaskId}: last pdflatex pass did not update the PDF, returning the result of an earlier pass", task.TaskId);
                 }
 
-                var outputPdfName = Path.GetFileNameWithoutExtension(task.SourceFile) + ".pdf";
-                var outputPdfPath = Path.Combine(_pdfDir, outputPdfName);
+                var outputPdfPath = Path.Combine(_pdfDir, $"{task.TaskId}.pdf");
 
                 File.Copy(pdfPath, outputPdfPath, overwrite: true);
                 _logger.LogInformation("PDF successfully created: {OutputPath}", outputPdfPath);
