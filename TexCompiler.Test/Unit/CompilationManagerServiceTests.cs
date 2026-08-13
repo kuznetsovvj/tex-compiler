@@ -197,7 +197,7 @@ namespace TexCompiler.UnitTests.Services
             return fileMock.Object;
         }
 
-        public void Dispose()
+        internal void Dispose()
         {
             try
             {
