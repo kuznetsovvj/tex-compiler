@@ -62,12 +62,12 @@ namespace TexCompiler.Controllers
 					});
 				}
 
-				if (request.TexFile.Length > UploadLimits.GetMaxFileSizeMegabytes(_configuration))
+				if (request.TexFile.Length > UploadLimits.GetMaxFileSizeBytes(_configuration))
 				{
 					return BadRequest(new ApiResponse<UploadResponse>
 					{
 						Success = false,
-						Error = $"Размер файла не должен превышать {UploadLimits.GetMaxFileSizeMegabytes} Мб"
+						Error = $"Размер файла не должен превышать {UploadLimits.GetMaxFileSizeMegabytes(_configuration)} Мб"
 					});
 				}
 
