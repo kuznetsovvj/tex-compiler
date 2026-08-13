@@ -345,7 +345,7 @@ namespace TexCompiler.Services
 
                 try
                 {
-                    referenced.Add(task.PdfFilePath);
+                    referenced.Add(path);
                 }
                 catch (Exception ex)
                 {
