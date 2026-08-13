@@ -21,14 +21,13 @@ namespace TexCompiler.UnitTests.Services
         {
             _contentRoot = Path.Combine(Path.GetTempPath(), $"texcompiler-cleanup-test-{Guid.NewGuid()}");
             _webRoot = Path.Combine(_contentRoot, "wwwroot");
-            _pdfDir = Path.Combine(_webRoot, "pdfs");
             _storageDir = Path.Combine(_contentRoot, "storage");
-            Directory.CreateDirectory(_pdfDir);
-            Directory.CreateDirectory(_storageDir);
 
             var environmentMock = new Mock<IWebHostEnvironment>();
             environmentMock.Setup(e => e.WebRootPath).Returns(_webRoot);
             environmentMock.Setup(e => e.ContentRootPath).Returns(_contentRoot);
+
+            _pdfDir = ArtifactPath.GetPdfDirectory(environmentMock.Object);
 
             _taskStorageService = new Mock<ITaskStorageService>();
             _taskStorageService.Setup(t => t.GetAllTasks()).Returns(new List<CompilationTask>());
@@ -128,6 +127,19 @@ namespace TexCompiler.UnitTests.Services
             _service.PerformFullCleanup();
             Assert.False(File.Exists(orphan), "файл прежней раскладки без задачи должен удалиться");
             Assert.True(File.Exists(referenced), "файл прежней раскладки с живой задачей - нет");
+        }
+
+        [Fact]
+        public void ArtifactDirectories_AreOutsideWebroot()
+        {
+            var environment = new Mock<IWebHostEnvironment>();
+            environment.Setup(e => e.WebRootPath).Returns(_webRoot);
+            environment.Setup(e => e.ContentRootPath).Returns(_contentRoot);
+
+            var webRootPrefix = _webRoot + Path.DirectorySeparatorChar;
+
+            Assert.DoesNotContain(webRootPrefix, ArtifactPath.GetPdfDirectory(environment.Object));
+            Assert.DoesNotContain(webRootPrefix, ArtifactPath.GetLogDirectory(environment.Object));
         }
 
         private void GivenTasks(params CompilationTask[] tasks)

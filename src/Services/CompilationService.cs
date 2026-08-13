@@ -24,8 +24,8 @@ public class CompilationService : ICompilationService
         _environment = environment;
         _logger = logger;
         _configuration = configuration;
-        _logDir = Path.Combine(_environment.WebRootPath, "logs");
-        _pdfDir = Path.Combine(_environment.WebRootPath, "pdfs");
+        _logDir = ArtifactPath.GetLogDirectory(environment);
+        _pdfDir = ArtifactPath.GetPdfDirectory(environment);
 
         Directory.CreateDirectory(_logDir);
         Directory.CreateDirectory(_pdfDir);

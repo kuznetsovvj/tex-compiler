@@ -138,7 +138,7 @@ namespace TexCompiler.Services
         {
             try
             {
-                var pdfsPath = Path.Combine(_environment.WebRootPath, "pdfs");
+                var pdfsPath = ArtifactPath.GetPdfDirectory(_environment);
                 if (!Directory.Exists(pdfsPath))
                     return 0;
 
