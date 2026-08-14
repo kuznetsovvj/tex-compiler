@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Threading.RateLimiting;
 using TexCompiler.Filters;
 using TexCompiler.Models;
 using TexCompiler.Services;
@@ -6,14 +7,7 @@ using TexCompiler.Services;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllersWithViews();
-
 builder.Services.AddScoped<UploadSizeLimitFilter>();
-
-// [ApiController] отклоняет запрос с невалидной моделью сам, до входа в метод действия, и
-// по умолчанию отвечает документом ProblemDetails. Интерфейс такой ответ прочитать не умеет:
-// он ждёт { success, error } и на всё остальное показывает "HTTP error! status: 400".
-// Поэтому ответ приводится к общей форме — иначе серверная проверка расширения дала бы
-// технический текст вместо объяснения.
 builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
     options.InvalidModelStateResponseFactory = context =>
@@ -28,15 +22,18 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
         {
             Success = false,
             Error = errors.Count > 0
-                ? $"Ошибка валидации: {string.Join(", ", errors)}"
-                : "Запрос не прошёл проверку"
+                ? $"������ ���������: {string.Join(", ", errors)}"
+                : "������ �� ������ ��������"
         });
     };
 });
 
+
 builder.Services.AddSingleton<ITaskStorageService, TaskStorageService>();
+builder.Services.AddSingleton<CompilationQueue>();
 builder.Services.AddSingleton<CompilationManagerService>();
 builder.Services.AddSingleton<ICompilationService, CompilationService>();
+builder.Services.AddHostedService<CompilationWorker>();
 builder.Services.AddHostedService<CleanupService>();
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>

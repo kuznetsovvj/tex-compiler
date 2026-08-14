@@ -9,15 +9,23 @@ public class CompilationService : ICompilationService
 {
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<CompilationService> _logger;
+    private readonly IConfiguration _configuration;
     private readonly string _logDir;
     private readonly string _pdfDir;
 
-    public CompilationService(IWebHostEnvironment environment, ILogger<CompilationService> logger)
+    private TimeSpan ProcessTimeout => TimeSpan.FromSeconds(
+        _configuration.GetValue<int>("CompilationSettings:ProcessTimeoutSeconds", 600));
+
+    public CompilationService(
+        IWebHostEnvironment environment,
+        ILogger<CompilationService> logger,
+        IConfiguration configuration)
     {
         _environment = environment;
         _logger = logger;
-        _logDir = Path.Combine(_environment.WebRootPath, "logs");
-        _pdfDir = Path.Combine(_environment.WebRootPath, "pdfs");
+        _configuration = configuration;
+        _logDir = ArtifactPath.GetLogDirectory(environment);
+        _pdfDir = ArtifactPath.GetPdfDirectory(environment);
 
         Directory.CreateDirectory(_logDir);
         Directory.CreateDirectory(_pdfDir);
@@ -33,17 +41,26 @@ public class CompilationService : ICompilationService
         var originalFileName = Path.GetFileNameWithoutExtension(task.SourceFile);
 
         var mainTexFile = Path.GetFileName(task.SourceFile);
+
+        // Рабочий каталог pdflatex - каталог главного tex-файла, а не корень tempDir.
+        // TeX разрешает относительные пути из \input и \includegraphics относительно
+        // рабочего каталога процесса, а не относительно обрабатываемого файла.
+        var texDir = tempDir;
+
+
+        string? asymptoteOutput = null;
+
         try
         {
-            // Тип определяется по содержимому, а не по расширению: расширение — это
-            // строка, которую прислал клиент, и архив под именем .tex уходил в pdflatex
-            // как исходник.
+            // Тип определяем по содержимому, а не по расширению: расширение - 
+            // это строка, которую прислал клиент. Архив под именем .tex 
+            // уходил в pdflatex как исходник.
             if (ArchiveDetector.IsZipArchive(task.SourceFile))
             {
                 ExtractZipArchive(task.SourceFile, tempDir);
-                mainTexFile = FindMainTexFile(tempDir);
+                var mainTexPath = FindMainTexFile(tempDir);
 
-                if (string.IsNullOrEmpty(mainTexFile))
+                if (string.IsNullOrEmpty(mainTexPath))
                 {
                     return new CompilationResult
                     {
@@ -52,72 +69,96 @@ public class CompilationService : ICompilationService
                     };
 
                 }
+                // FindMainTexFile ищет рекурсивно и возвращает полный путь
+                texDir = Path.GetDirectoryName(mainTexPath) ?? tempDir;
+                mainTexFile = Path.GetFileName(mainTexPath);
+
             }
             else if (Path.GetExtension(task.SourceFile).Equals(".zip", StringComparison.OrdinalIgnoreCase))
             {
-                // Раньше такой файл падал внутри ZipFile.OpenRead, а пользователь видел
-                // «Compilation error: …» — сообщение про сбой сервиса, а не про свой файл.
+                // Раньше такой  файл падал внутри ZipFile.OpenRead, а пользователь видел
+                // "Compilation error..." - сообщение про сбой сервиса, а не про свой файл
                 return new CompilationResult
                 {
                     IsSuccess = false,
-                    ErrorMessage = "Файл с расширением .zip не является архивом. Проверьте, что архив не повреждён."
+                    ErrorMessage = "Файл с расширение .zip не является архивом. Проверьте, что архив не поврежден."
                 };
             }
+
             else
             {
                 File.Copy(task.SourceFile, Path.Combine(tempDir, mainTexFile), true);
             }
 
 
-
-            // Первая компиляция LaTeX
             var latexArgs = $"-interaction=nonstopmode -shell-escape \"{mainTexFile}\"";
-            var latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
+            var pdfPath = Path.Combine(texDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
 
-            if (!latexResult.Success)
+            // Цепочка проходов идёт до конца независимо от кодов возврата. Ранний выход
+            // по ненулевому коду давал ложные отказы: в режиме nonstopmode pdflatex
+            // доходит до конца документа и возвращает ненулевой код при любой ошибке TeX,
+            // включая полностью восстановимые, а PDF при этом обычно пригоден. Хуже того,
+            // отказ первого прохода обрыва цепочку вызовов asy, то есть иллюстрации
+            // не строились вовсе - при том, что смысл трех проходов именно в этом.
+            var passes = new List<ProcessResult>
             {
-                return new CompilationResult
-                {
-                    IsSuccess = false,
-                    ErrorMessage = "LaTeX compilation failed"
-                };
-            }
+                await RunLatexPassAsync(latexArgs, texDir, 1)
+            };
 
-            var asyFiles = Directory.GetFiles(tempDir, "*.asy");
+            // Поиск рекурсивный, как и поиск главного tex-файла в FindMainTexFile. Только
+            // корень видел лишь файлы inline-режима: {jobname}-*.asy пакет генерирует
+            // в рабочем каталоге pdflatex. Принесенные пользователем .asy, разложенные
+            // в архиве по подпапкам, не находились вовсе.
+            var asyFiles = Directory.GetFiles(tempDir, "*.asy", SearchOption.AllDirectories);
             _logger.LogInformation("Found {Count} Asymptote files", asyFiles.Length);
+
+            var nestedAsyFiles = asyFiles
+                .Select(file => Path.GetRelativePath(tempDir, file))
+                .Where(relative => relative.Contains(Path.DirectorySeparatorChar))
+                .ToArray();
+
+            if (nestedAsyFiles.Length > 0)
+            {
+                _logger.LogInformation("Asymptote files outside the root: {Files}",
+                    string.Join(", ", nestedAsyFiles));
+            }
 
             if (asyFiles.Length > 0)
             {
-                var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, tempDir);
+                var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, texDir);
+                asymptoteOutput = asyResult.Output;
+
+                // Неуспех asy намеренно не превращается в неуспех компиляции: asy охотно
+                // возвращает ненулевой код на предупреждениях, и часть документов при этом
+                // собирается в пригодный pdf.
+                if (!asyResult.Success)
+                {
+                    _logger.LogWarning("Task {TaskId}: Assymptote failed (exit code {ExitCode}). Output: {Output}",
+                        task.TaskId, asyResult.ExitCode, asyResult.Output);
+                }
             }
 
-            latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
-            if (!latexResult.Success)
-            {
-                return new CompilationResult
-                {
-                    IsSuccess = false,
-                    ErrorMessage = "LaTeX compilation failed"
-                };
-            }
+            passes.Add(await RunLatexPassAsync(latexArgs, texDir, 2));
+
+            // Время записи PDF до последнего прохода: файл мог остаться от предыдущего
+            // и тогда его нельзя молча выдать за результат последнего
+            var pdfWriteTimeBeforeLastPass = File.Exists(pdfPath)
+                ? File.GetLastWriteTimeUtc(pdfPath)
+                : (DateTime?)null;
 
             // Параноидальная третья компиляция, чтобы точно создалось оглавление
-            latexResult = await RunProcessAsync("pdflatex", latexArgs, tempDir);
-            if (!latexResult.Success)
-            {
-                return new CompilationResult
-                {
-                    IsSuccess = false,
-                    ErrorMessage = "LaTeX compilation failed"
-                };
-            }
+            passes.Add(await RunLatexPassAsync(latexArgs, texDir, 3));
 
-            // Проверяем, создался ли PDF
-            var pdfPath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
+            // Единственный критерий успеха - наличие PDF
             if (File.Exists(pdfPath))
             {
-                var outputPdfName = Path.GetFileNameWithoutExtension(task.SourceFile) + ".pdf";
-                var outputPdfPath = Path.Combine(_pdfDir, outputPdfName);
+                if (pdfWriteTimeBeforeLastPass != null
+                    && File.GetLastWriteTimeUtc(pdfPath) <= pdfWriteTimeBeforeLastPass)
+                {
+                    _logger.LogWarning("Task {TaskId}: last pdflatex pass did not update the PDF, returning the result of an earlier pass", task.TaskId);
+                }
+
+                var outputPdfPath = Path.Combine(_pdfDir, $"{task.TaskId}.pdf");
 
                 File.Copy(pdfPath, outputPdfPath, overwrite: true);
                 _logger.LogInformation("PDF successfully created: {OutputPath}", outputPdfPath);
@@ -134,10 +175,21 @@ public class CompilationService : ICompilationService
                 return new CompilationResult
                 {
                     IsSuccess = false,
-                    ErrorMessage = "PDF file was not generated"
+                    ErrorMessage = DescribeMissingPdf(passes)
                 };
 
             }
+        }
+        catch (InvalidDataException ex)
+        {
+            // Сюда попадают отклоненные архивы
+            _logger.LogWarning(ex, "Rejected archive for task {TaskId}: {Reason}", task.TaskId, ex.Message);
+
+            return new CompilationResult
+            {
+                IsSuccess = false,
+                ErrorMessage = $"Не удалось распаковать архив: {ex.Message}"
+            };
         }
         catch (Exception ex)
         {
@@ -150,13 +202,67 @@ public class CompilationService : ICompilationService
         }
         finally
         {
-            SaveLogToFile(task, _logDir, tempDir);
+            SaveLogToFile(task, mainTexFile, texDir, asymptoteOutput);
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
     }
 
-    private string FindMainTexFile(string directory)
+    /// <summary>
+    /// Один проход pdflatex. Ненулевой код возврата фиксируется в журнале, но
+    /// отказом не считается - решение принимается один раз по факту наличия PDF
+    /// </summary>
+    private async Task<ProcessResult> RunLatexPassAsync(string latexArgs, string tempDir, int pass)
+    {
+        var result = await RunProcessAsync("pdflatex", latexArgs, tempDir);
+
+        if (result.ExitCode == null)
+        {
+            _logger.LogError("pdflatex pass {Pass}: process could not be started", pass);
+        }
+
+        else if (result.ExitCode != 0)
+        {
+            // Ожидаемая ситуация для восстановимых ошибок TeX: продолжаем цепочку
+            _logger.LogWarning("pdflatex pass {Pass} exited with code {ExitCode}, continuing", pass, result.ExitCode);
+        }
+        else
+        {
+            _logger.LogInformation("pdflatex pass {Pass} exited with code 0", pass);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// PDF не создан - надо отличить "pdflatex не запустился" от "запускался, но
+    /// результата нет"
+    /// </summary>
+    private static string DescribeMissingPdf(IReadOnlyList<ProcessResult> passes)
+    {
+        if (passes.Any(pass => pass.ExitCode == null))
+        {
+            return "Не удалось запустить pdflatex";
+        }
+
+        var codes = string.Join(", ", passes.Select((pass, index) => $"Проход {index + 1}: {pass.ExitCode}"));
+
+        return $"PDF не был создан. Коды возврата pdflatex - {codes}. Подробности в логи компиляции.";
+    }
+
+    private static string DescribeLatexFailure(ProcessResult result)
+    {
+        return result.TimedOut
+            ? "Превышено время компиляции LaTeX, процесс остановлен"
+            : "Ошибка компиляции LaTeX";
+    }
+
+    /// <summary>
+    /// Ищет главный tex-файл рекурсивно и возвращает полный путь. От его каталога
+    /// зависит рабочий каталог pdflatex, поэтому метод покрыт тестами и открыт как 
+    /// internal
+    /// </summary>
+    internal static string FindMainTexFile(string directory)
     {
         var texFiles = Directory.GetFiles(directory, "*.tex", SearchOption.AllDirectories);
 
@@ -206,7 +312,7 @@ public class CompilationService : ICompilationService
         }
     }
 
-    private async Task<ProcessResult> RunProcessAsync(string command, string arguments, string workingDir)
+    internal async Task<ProcessResult> RunProcessAsync(string command, string arguments, string workingDir)
     {
         var processStartInfo = new ProcessStartInfo
         {
@@ -220,38 +326,180 @@ public class CompilationService : ICompilationService
         };
 
         using var process = Process.Start(processStartInfo);
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
 
-        return new ProcessResult
+        if (process == null)
         {
-            Success = process.ExitCode == 0,
-            Output = output
-        };
+            _logger.LogError("Failed to start process {Command}. Args: {Arguments}", command, arguments);
+
+            return new ProcessResult
+            {
+                Success = false,
+                Output = $"Не удалось запустить процесс {command}"
+            };
+        }
+
+        var timeout = ProcessTimeout;
+        using var cts = new CancellationTokenSource(timeout);
+
+        // Оба потока начинают читаться до ожидания выхода. Перенаправленный поток - это
+        // pipe с буфером ограниченного размера (обычно 64 Кб). Пока буфер не заполнен,
+        // процесс пишет и работает дальше, а как только заполнится - очередная
+        // запись блокируется до того, как кто-нибудь прочитает данные с другого конца.
+        // Пока читался только stdout, процесс, пишущий много в stderr, вставал намерство:
+        // родитель ждал завершения, процесс ждал возможности запись.
+
+        // Токен передается и в чтение вывода, и в ожидание выхода: процесс может 
+        // зависнуть, ничего не записав, тогда ReadToEndAsync без токена не вернется.
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+        
+
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+
+            return new ProcessResult
+            {
+                Success = process.ExitCode == 0,
+                ExitCode = process.ExitCode,
+                Output = await stdoutTask,
+                Error = await stderrTask
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogError("Process {Command} exceeded the {Timeout}s limit and will be killed. Arguments {Arguments}",
+                command, timeout.TotalSeconds, arguments);
+
+            KillProcessTree(process, command);
+
+            await DrainAsync(stdoutTask);
+            await DrainAsync(stderrTask);
+
+            return new ProcessResult
+            {
+                Success = false,
+                TimedOut = true,
+                Output = $"Процесс {command} превысил лимит {timeout.TotalSeconds:0} c и был принудительно завершен"
+            };
+        }
+    }
+
+    /// <summary>
+    /// Дожидается отмененной задачи чтения, поглощая исключения. Нужна только на пути таймаута
+    /// Данные из отмененного ReadToAsync уже недоступны
+    /// </summary>
+    private static async Task DrainAsync(Task<string> readTask)
+    {
+        try
+        {
+            await readTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // Чтение отменено вместе с процессом
+        }
+        catch (Exception)
+        {
+            // Поток мог закрыться вместе с убитым процессом
+        }
+    }
+
+    /// <summary>
+    /// Завершает процесс вместе с потомками: pdflatex c -shell-escape порождает дочерние процессы и убийство одного родителя
+    /// оставило бы их работать
+    /// </summary>
+    private void KillProcessTree(Process process, string command)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Процесс мог завершиться сам собой между проверкой и вызовом Kill
+            _logger.LogWarning(ex, "Failed to kill process {Command}", command);
+        }
     }
 
     /// <summary>
     /// Компилирует все Asymptote файлы за один вызов
     /// </summary>
-    private async Task<ProcessResult> CompileAllAsymptoteFilesAsync(string[] asyFiles, string workingDir)
+    private async Task<ProcessResult> CompileAllAsymptoteFilesAsync(string[] asyFiles, string tempDir)
     {
         if (asyFiles.Length == 0)
             return new ProcessResult { Success = true, Output = "No Asymptote files to compile" };
 
+        var groups = GroupAsymptoteFilesByDirectory(asyFiles, tempDir);
+        var outputs = new List<string>();
+        var allSucceeded = true;
+
+        foreach (var (directory, fileNames) in groups)
+        {
+            var result = await CompileAsymptoteGroupAsync(directory, fileNames);
+            var relativeDirectory = Path.GetRelativePath(tempDir, directory);
+
+            if (!result.Success)
+            {
+                allSucceeded = false;
+                _logger.LogWarning("Asymptote failed in {Directory}: {Output}",
+                    relativeDirectory, result.Output);
+            }
+
+            var text = string.Join(Environment.NewLine,
+                new[] { result.Output, result.Error }.Where(part => !string.IsNullOrWhiteSpace(part)));
+
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                outputs.Add($"--- {relativeDirectory} ---{Environment.NewLine}{text}");
+            }
+        }
+
+        return new ProcessResult
+        {
+            Success = allSucceeded,
+            Output = string.Join(Environment.NewLine, outputs)
+        };
+    }
+
+    /// <summary>
+    /// Раскладывает найденные .asy по каталогам, в которых они лежат
+    /// 
+    /// Asy кладет результат в свой рабочий каталог, а includegraphics из tex-файла
+    /// ищет картинку рядом с собой. Один вызов из корня с полными путями сложил бы все 
+    /// картинки в корень, и подключение бы сломалось.
+    /// </summary>
+    internal static List<(string Directory, string[] FileNames)> GroupAsymptoteFilesByDirectory(
+        string[] asyFiles, string tempDir)
+    {
+
+        return asyFiles
+            .GroupBy(file => Path.GetDirectoryName(Path.GetFullPath(file)) ?? Path.GetFullPath(tempDir))
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => (
+                Directory: group.Key,
+                FileNames: group.Select(Path.GetFileName).OfType<string>().OrderBy(name => name, StringComparer.Ordinal).ToArray()))
+            .ToList();
+    }
+
+    private async Task<ProcessResult> CompileAsymptoteGroupAsync(string directory, string[] fileNames)
+    { 
         try
         {
-            // Создаем аргументы командной строки со всеми файлами
-            var fileNames = asyFiles.Select(f => $"\"{Path.GetFileName(f)}\"");
-            var arguments = string.Join(" ", fileNames);
+            var quotedNames = fileNames.Select(name => $"\"{name}\"");
+            var arguments = string.Join(" ", quotedNames);
 
-            _logger.LogDebug("Compiling {Count} Asymptote files: {Files}",
-                asyFiles.Length, string.Join(", ", fileNames));
+            _logger.LogDebug("Compiling {Count} Asymptote files in {Directory}: {Files}",
+                fileNames.Length, directory, string.Join(", ", fileNames));
 
-            return await RunProcessAsync("asy", arguments, workingDir);
+            return await RunProcessAsync("asy", arguments, directory);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error compiling Asymptote files");
+            _logger.LogError(ex, "Error compiling Asymptote files in {Directory}", directory);
             return new ProcessResult
             {
                 Success = false,
@@ -302,18 +550,45 @@ public class CompilationService : ICompilationService
         }
     }
 
-    private void SaveLogToFile(CompilationTask task, string logsDir, string tempDir)
+    /// <summary>
+    /// Копирует лог pdflatex из временной директории в хранилище логов.
+    /// Имя лога определяет сам pdflatex по своему входному файлу, поэтому оно
+    /// производится от главного tex-файла, а не от имени загруженного: для
+    /// zip-архива это разные имена, и лог по имени файла не нашелся бы никогда.
+    /// </summary>
+    private void SaveLogToFile(CompilationTask task, string mainTexFile, string tempDir, string? asymptoteOutput)
     {
         try
         {
-            var logFilePath = Path.Combine(tempDir, Path.GetFileNameWithoutExtension(task.SourceFile) + ".log");
-            if (File.Exists(logFilePath))
+            var outputLogName = $"{task.TaskId}.log";
+            var outputLogFilePath = Path.Combine(_logDir, outputLogName);
+
+            var logFileName = Path.GetFileNameWithoutExtension(mainTexFile) + ".log";
+
+            var logFilePath = Path.Combine(tempDir, logFileName);
+            if (!File.Exists(logFilePath))
             {
-                var outputLogName = $"{task.TaskId}.log";
-                var outputLogFilePath = Path.Combine(_logDir, outputLogName);
-                File.Copy(logFilePath, outputLogFilePath, overwrite: true);
-                task.LogFilePath = outputLogFilePath;
+                var foundLogs = Directory.GetFiles(tempDir, "*.log").Select(f => Path.GetFileName(f));
+
+                _logger.LogWarning("Compilation log {Excepted} not found for task {TaskId}. Logs in temp dir: {Found}",
+                    logFileName, task.TaskId, string.Join(", ", foundLogs));
+                return;
             }
+
+            File.Copy(logFilePath, outputLogFilePath, overwrite: true);
+
+            if (string.IsNullOrWhiteSpace(asymptoteOutput))
+            {
+                return;
+            }
+
+            // Дописываем после копирования лога pdflatex, а не вместо него
+            File.AppendAllText(outputLogFilePath,
+                $"{Environment.NewLine}========== ASYMPTOTE OUTPUT =============={Environment.NewLine}{asymptoteOutput}{Environment.NewLine}");
+
+            task.LogFilePath = outputLogFilePath;
+
+            _logger.LogInformation("Compilation log saved for task {TaskId}", task.TaskId);
         }
         catch (Exception ex)
         {

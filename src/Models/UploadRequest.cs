@@ -2,7 +2,7 @@
 {
 	public class UploadRequest
 	{
-		[AllowedFileExtensions(".tex", ".zip")]
+		[AllowFileExtensions(".tex", ".zip")]
 		public IFormFile TexFile { get; set; }
 	}
 }

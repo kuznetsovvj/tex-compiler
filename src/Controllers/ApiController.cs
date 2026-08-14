@@ -13,6 +13,7 @@ namespace TexCompiler.Controllers
 		private readonly IWebHostEnvironment _environment;
 		private readonly ILogger<ApiController> _logger;
 		private readonly IConfiguration _configuration;
+		
 
 		public ApiController (
 			CompilationManagerService compilationManagerService,
@@ -61,9 +62,6 @@ namespace TexCompiler.Controllers
 					});
 				}
 
-				// Kestrel обрывает запрос раньше (UploadSizeLimitFilter), но с запасом на
-				// служебные части multipart. Точную границу проверяем здесь: здесь есть
-				// возможность объяснить пользователю, что произошло.
 				if (request.TexFile.Length > UploadLimits.GetMaxFileSizeBytes(_configuration))
 				{
 					return BadRequest(new ApiResponse<UploadResponse>
@@ -202,8 +200,9 @@ namespace TexCompiler.Controllers
                     return NotFound("Лог компиляции не найден");
                 }
 
-                if (task.LogFilePath == null || task.LogFilePath.Length == 0)
+                if (string.IsNullOrEmpty(task.LogFilePath) || !System.IO.File.Exists(task.LogFilePath))
                 {
+					_logger.LogWarning("Log file not found for task: {TaskId}, Path: {Path}", taskId, task.LogFilePath);
                     return NotFound("Лог компиляции не найден");
                 }
 

@@ -9,7 +9,6 @@ namespace TexCompiler.UnitTests.Services
         [Fact]
         public void RealArchive_IsRecognized_RegardlessOfExtension()
         {
-            // Архив, переименованный в .tex, уходил в pdflatex как исходник.
             using var archive = new MemoryStream();
             using (var zip = new ZipArchive(archive, ZipArchiveMode.Create, leaveOpen: true))
             {
@@ -17,19 +16,14 @@ namespace TexCompiler.UnitTests.Services
             }
 
             archive.Position = 0;
-
             Assert.True(ArchiveDetector.IsZipArchive(archive));
         }
 
         [Fact]
         public void EmptyArchive_IsRecognized()
         {
-            // Пустой архив начинается с сигнатуры central directory, а не записи.
-            // Такой файл — всё-таки архив, и сообщение должно быть про отсутствие .tex.
             using var archive = new MemoryStream();
-            using (var _ = new ZipArchive(archive, ZipArchiveMode.Create, leaveOpen: true))
-            {
-            }
+            using (var _ = new ZipArchive(archive, ZipArchiveMode.Create, leaveOpen: true)) { }
 
             archive.Position = 0;
 
