@@ -1,45 +1,58 @@
 ﻿<!DOCTYPE html>
-<html lang="en">
+<html lang="ru" data-theme="light">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - TexCompiler</title>
-    <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <meta name="color-scheme" content="light dark" />
+    <title>@ViewData["Title"] — TexCompiler</title>
+    @* Тема выставляется до подключения стилей и до первой отрисовки: иначе
+       страница на мгновение показывается светлой и только потом темнеет.
+       Поэтому скрипт инлайновый и стоит выше link на CSS — вынесенный в файл,
+       он давал бы то самое мигание, ради устранения которого нужен. *@
+    <script>
+        (function () {
+            try {
+                var saved = localStorage.getItem('tex-compiler-theme');
+                var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+            } catch (e) {
+                // localStorage закрыт настройками приватности — остаётся светлая тема.
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/TexCompiler.styles.css" asp-append-version="true" />
 </head>
 <body>
-    <header>
-        <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
-            <div class="container-fluid">
-                <a class="navbar-brand" asp-area="" asp-controller="Home" asp-action="Index">TexCompiler</a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target=".navbar-collapse" aria-controls="navbarSupportedContent"
-                        aria-expanded="false" aria-label="Toggle navigation">
-                    <span class="navbar-toggler-icon"></span>
-                </button>
-                <div class="navbar-collapse collapse d-sm-inline-flex justify-content-between">
-                    <ul class="navbar-nav flex-grow-1">
-                        <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
-                        </li>
-                    </ul>
-                </div>
-            </div>
-        </nav>
+    <header class="app-header">
+        <div class="app-header__inner">
+            <a class="brand" asp-area="" asp-controller="Home" asp-action="Index">
+                <span class="brand__mark" aria-hidden="true">TeX</span>
+                <span>TexCompiler</span>
+            </a>
+            <button type="button" id="themeToggle" class="theme-toggle" aria-label="Переключить тему">
+                <svg class="theme-toggle__sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="4.5" />
+                    <path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.5 1.5m11.2 11.2l1.5 1.5M4.9 19.1l1.5-1.5M17.6 6.4l1.5-1.5" />
+                </svg>
+                <svg class="theme-toggle__moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a7 7 0 1 0 10.5 10.5z" />
+                </svg>
+            </button>
+        </div>
     </header>
-    <div class="container">
-        <main role="main" class="pb-3">
-            @RenderBody()
-        </main>
-    </div>
 
-    <footer class="border-top footer text-muted">
-        <div class="container">
-            &copy; 2025-2026 - <a href="https://t.me/v_y_kuznetsov">Vladimir Kuznetsov</a>; v.0.11
+    <main class="app-main" role="main">
+        @RenderBody()
+    </main>
+
+    <footer class="app-footer">
+        <div class="app-footer__inner">
+            <span>&copy; 2025-2026 <a href="https://t.me/v_y_kuznetsov">Vladimir Kuznetsov</a></span>
+            <span>v.1.0</span>
         </div>
     </footer>
-    <script src="~/lib/jquery/dist/jquery.min.js"></script>
-    <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+
     <script src="~/js/site.js" asp-append-version="true"></script>
     @await RenderSectionAsync("Scripts", required: false)
 </body>
