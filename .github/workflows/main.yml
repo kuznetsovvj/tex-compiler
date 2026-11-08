@@ -41,9 +41,15 @@ jobs:
             # областей задач, общий с dockerd. Владелец на хосте - uid 1000 (см. README).
             # Комментарии только над командой: внутри переносов строк bash их
             # обрабатывает иначе, и docker run теряет аргументы (был инцидент).
+            # Сокет на хосте принадлежит root:docker (660), приложение работает под
+            # uid 1000 и не входит в эту группу. --group-add с gid группы docker
+            # дает доступ к сокету без chmod 666 на хосте (chmod открывал бы docker
+            # любому пользователю VDS - это root-доступ к хосту).
+            DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
             docker run -d \
               --name texcompiler-app \
               --restart unless-stopped \
+              --group-add "$DOCKER_GID" \
               -v ${{ secrets.MOUNT_STORAGE_DIR }} \
               -v ${{ secrets.MOUNT_LOGS_DIR}} \
               -v /var/run/docker.sock:/var/run/docker.sock \
