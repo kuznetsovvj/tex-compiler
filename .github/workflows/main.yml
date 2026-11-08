@@ -40,6 +40,12 @@ jobs:
               --restart unless-stopped \
               -v ${{ secrets.MOUNT_STORAGE_DIR }} \
               -v ${{ secrets.MOUNT_LOGS_DIR}} \
+              # docker.sock: приложение запускает компиляцию в одноразовых контейнерах.
+              # Контейнеру компиляции сокет не передается - только этому, app-контейнеру.
+              # MOUNT_TASKS_DIR вида /var/lib/texcompiler-tasks:/tasks: каталог рабочих
+              # областей задач, общий с dockerd. Владелец на хосте - uid 1000 (см. README).
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              -v ${{ secrets.MOUNT_TASKS_DIR }} \
               -p ${{ secrets.PORT_OUTER }}:${{ secrets.PORT_INNER }} \
               texcompiler-app:latest
 

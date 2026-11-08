@@ -4,8 +4,9 @@ namespace TexCompiler.UnitTests.Services
 {
     /// <summary>
     /// Регрессия на критическую уязвимость: pdflatex запускался с -shell-escape,
-    /// и пользовательский документ через \write18 выполнял произвольные команды
-    /// внутри контейнера.
+    /// и пользовательский документ через \write18 выполнял произвольные команды.
+    /// Аргументы списком: каждый уходит в ProcessStartInfo.ArgumentList отдельно,
+    /// ручного quoting строкой нет.
     /// </summary>
     public class LatexArgumentsTests
     {
@@ -15,11 +16,9 @@ namespace TexCompiler.UnitTests.Services
             var args = CompilationService.BuildLatexArguments("main.tex");
 
             Assert.Contains("-no-shell-escape", args);
-
-            // "-no-shell-escape" сам содержит подстроку "-shell-escape", поэтому
-            // проверяем, что выключенный флаг - единственное вхождение shell-escape
-            var withoutDisabledFlag = args.Replace("-no-shell-escape", string.Empty);
-            Assert.DoesNotContain("shell-escape", withoutDisabledFlag);
+            // Сравнение по элементам, а не подстрокам: "-no-shell-escape" сам
+            // содержит "-shell-escape"
+            Assert.DoesNotContain("-shell-escape", args);
         }
 
         [Fact]
@@ -27,7 +26,7 @@ namespace TexCompiler.UnitTests.Services
         {
             var args = CompilationService.BuildLatexArguments("main.tex");
 
-            Assert.Contains("main.tex", args);
+            Assert.Equal("main.tex", args.Last());
         }
     }
 }

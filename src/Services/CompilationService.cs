@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using System.ComponentModel;
 using System.Data;
 using System.Diagnostics;
 using TexCompiler.Models;
@@ -15,6 +16,37 @@ public class CompilationService : ICompilationService
     private TimeSpan ProcessTimeout => TimeSpan.FromSeconds(
         _configuration.GetValue<int>("CompilationSettings:ProcessTimeoutSeconds", 600));
 
+    // Каждый вызов pdflatex/asy выполняется в одноразовом docker-контейнере с
+    // изоляцией (см. ContainerRunCommandBuilder): без сети, без capabilities,
+    // от rootfs, непривилегированный UID, лимиты памяти/CPU/PID. Локально и в CI
+    // без docker изоляцию можно выключить (EnableIsolation=false) - тогда инструменты
+    // запускаются напрямую в процессе приложения.
+    private bool IsolationEnabled =>
+        _configuration.GetValue("CompilationContainer:EnableIsolation", true);
+
+    private string CompileImage =>
+        _configuration.GetValue<string>("CompilationContainer:Image") ?? "texcompiler-base:latest";
+
+    // Каталог рабочих областей задач. Должен совпадать с хостовым путем: dockerd
+    // монтирует workspace по пути, который видит приложение, поэтому bind на VDS
+    // выполняется 1:1 (хост:/var/lib/texcompiler-tasks -> контейнер:/tasks).
+    // Без настройки - системный temp: приложение работает, но docker-изоляция
+    // смонтирует лишь каталог внутри контейнера приложения и документы не соберутся.
+    private string WorkspaceRoot =>
+        _configuration.GetValue<string>("CompilationContainer:WorkspaceRoot") ?? Path.GetTempPath();
+
+    private string ContainerMemoryMb =>
+        _configuration.GetValue("CompilationContainer:MemoryMegabytes", 1024).ToString();
+
+    private string ContainerCpuCount =>
+        _configuration.GetValue("CompilationContainer:CpuCount", 1).ToString();
+
+    private string ContainerPidsLimit =>
+        _configuration.GetValue("CompilationContainer:PidsLimit", 256).ToString();
+
+    private string ContainerTmpSizeMb =>
+        _configuration.GetValue("CompilationContainer:TmpSizeMegabytes", 64).ToString();
+
     public CompilationService(
         IWebHostEnvironment environment,
         ILogger<CompilationService> logger,
@@ -28,38 +60,38 @@ public class CompilationService : ICompilationService
 
         Directory.CreateDirectory(_logDir);
         Directory.CreateDirectory(_pdfDir);
+        Directory.CreateDirectory(WorkspaceRoot);
     }
 
     public async Task<CompilationResult> CompileAsync(CompilationTask task)
     {
         var startTime = DateTime.UtcNow;
 
-        var tempDir = Path.Combine(Path.GetTempPath(), $"tex_compile_{Guid.NewGuid()}");
-        Directory.CreateDirectory(tempDir);
+        var workspace = Path.Combine(WorkspaceRoot, $"tex_{task.TaskId:N}");
+        Directory.CreateDirectory(workspace);
 
         var originalFileName = Path.GetFileNameWithoutExtension(task.SourceFile);
 
         var mainTexFile = Path.GetFileName(task.SourceFile);
 
-        // Рабочий каталог pdflatex - каталог главного tex-файла, а не корень tempDir.
+        // Рабочий каталог pdflatex - каталог главного tex-файла, а не корень workspace.
         // TeX разрешает относительные пути из \input и \includegraphics относительно
         // рабочего каталога процесса, а не относительно обрабатываемого файла.
-        var texDir = tempDir;
-
+        var texDir = workspace;
 
         string? asymptoteOutput = null;
 
         try
         {
-            // Тип определяем по содержимому, а не по расширению: расширение - 
-            // это строка, которую прислал клиент. Архив под именем .tex 
+            // Тип определяем по содержимому, а не по расширению: расширение -
+            // это строка, которую прислал клиент. Архив под именем .tex
             // уходил в pdflatex как исходник.
             if (ArchiveDetector.IsZipArchive(task.SourceFile))
             {
                 // Только SafeZipExtractor: он отсекает Zip Slip и zip-бомбы.
-                // Собственная распаковка здесь раньше писала по путям ../... за пределами tempDir
-                SafeZipExtractor.ExtractTo(task.SourceFile, tempDir);
-                var mainTexPath = FindMainTexFile(tempDir);
+                // Собственная распаковка здесь раньше писала по путям ../... за пределами workspace
+                SafeZipExtractor.ExtractTo(task.SourceFile, workspace);
+                var mainTexPath = FindMainTexFile(workspace);
 
                 if (string.IsNullOrEmpty(mainTexPath))
                 {
@@ -71,7 +103,7 @@ public class CompilationService : ICompilationService
 
                 }
                 // FindMainTexFile ищет рекурсивно и возвращает полный путь
-                texDir = Path.GetDirectoryName(mainTexPath) ?? tempDir;
+                texDir = Path.GetDirectoryName(mainTexPath) ?? workspace;
                 mainTexFile = Path.GetFileName(mainTexPath);
 
             }
@@ -88,9 +120,14 @@ public class CompilationService : ICompilationService
 
             else
             {
-                File.Copy(task.SourceFile, Path.Combine(tempDir, mainTexFile), true);
+                File.Copy(task.SourceFile, Path.Combine(workspace, mainTexFile), true);
             }
 
+            // Путь внутри контейнера: только относительный, с разделителям Linux.
+            // Записываемый вне workspace каталог контейнер не увидит в принципе:
+            // bind-монтирован ровно один каталог.
+            var relativeTexDir = Path.GetRelativePath(workspace, texDir)
+                .Replace(Path.DirectorySeparatorChar, '/');
 
             var latexArgs = BuildLatexArguments(mainTexFile);
             var pdfPath = Path.Combine(texDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
@@ -103,18 +140,18 @@ public class CompilationService : ICompilationService
             // не строились вовсе - при том, что смысл трех проходов именно в этом.
             var passes = new List<ProcessResult>
             {
-                await RunLatexPassAsync(latexArgs, texDir, 1)
+                await RunLatexPassAsync(task, workspace, relativeTexDir, latexArgs, 1)
             };
 
             // Поиск рекурсивный, как и поиск главного tex-файла в FindMainTexFile. Только
             // корень видел лишь файлы inline-режима: {jobname}-*.asy пакет генерирует
             // в рабочем каталоге pdflatex. Принесенные пользователем .asy, разложенные
             // в архиве по подпапкам, не находились вовсе.
-            var asyFiles = Directory.GetFiles(tempDir, "*.asy", SearchOption.AllDirectories);
+            var asyFiles = Directory.GetFiles(workspace, "*.asy", SearchOption.AllDirectories);
             _logger.LogInformation("Found {Count} Asymptote files", asyFiles.Length);
 
             var nestedAsyFiles = asyFiles
-                .Select(file => Path.GetRelativePath(tempDir, file))
+                .Select(file => Path.GetRelativePath(workspace, file))
                 .Where(relative => relative.Contains(Path.DirectorySeparatorChar))
                 .ToArray();
 
@@ -126,7 +163,7 @@ public class CompilationService : ICompilationService
 
             if (asyFiles.Length > 0)
             {
-                var asyResult = await CompileAllAsymptoteFilesAsync(asyFiles, texDir);
+                var asyResult = await CompileAllAsymptoteFilesAsync(task, workspace, asyFiles);
                 asymptoteOutput = asyResult.Output;
 
                 // Неуспех asy намеренно не превращается в неуспех компиляции: asy охотно
@@ -139,7 +176,7 @@ public class CompilationService : ICompilationService
                 }
             }
 
-            passes.Add(await RunLatexPassAsync(latexArgs, texDir, 2));
+            passes.Add(await RunLatexPassAsync(task, workspace, relativeTexDir, latexArgs, 2));
 
             // Время записи PDF до последнего прохода: файл мог остаться от предыдущего
             // и тогда его нельзя молча выдать за результат последнего
@@ -148,7 +185,7 @@ public class CompilationService : ICompilationService
                 : (DateTime?)null;
 
             // Параноидальная третья компиляция, чтобы точно создалось оглавление
-            passes.Add(await RunLatexPassAsync(latexArgs, texDir, 3));
+            passes.Add(await RunLatexPassAsync(task, workspace, relativeTexDir, latexArgs, 3));
 
             // Единственный критерий успеха - наличие PDF
             if (File.Exists(pdfPath))
@@ -204,28 +241,31 @@ public class CompilationService : ICompilationService
         finally
         {
             SaveLogToFile(task, mainTexFile, texDir, asymptoteOutput);
-            // Гарантированное удаление временной папки
-            await CleanupTempDirectory(tempDir);
+            // Гарантированное удаление рабочего каталога задачи
+            await CleanupTempDirectory(workspace);
         }
     }
 
     /// <summary>
-    /// Собирает аргументы pdflatex. Shell escape принудительно выключен: без этого
-    /// пользовательский документ через \write18 получил бы выполнение произвольных
-    /// команд внутри контейнера (чтение файлов, изменение приложения, сеть).
+    /// Аргументы pdflatex списком: транспорт добавляет каждый через
+    /// ProcessStartInfo.ArgumentList, без ручного quoting строкой. Shell escape
+    /// принудительно выключен: без этого пользовательский документ через \write18
+    /// получил бы выполнение произвольных команд (чтение файлов, сеть, изменение
+    /// приложения).
     /// </summary>
-    internal static string BuildLatexArguments(string mainTexFile)
+    internal static IReadOnlyList<string> BuildLatexArguments(string mainTexFile)
     {
-        return $"-interaction=nonstopmode -no-shell-escape \"{mainTexFile}\"";
+        return new List<string> { "-interaction=nonstopmode", "-no-shell-escape", mainTexFile };
     }
 
     /// <summary>
     /// Один проход pdflatex. Ненулевой код возврата фиксируется в журнале, но
     /// отказом не считается - решение принимается один раз по факту наличия PDF
     /// </summary>
-    private async Task<ProcessResult> RunLatexPassAsync(string latexArgs, string tempDir, int pass)
+    private async Task<ProcessResult> RunLatexPassAsync(
+        CompilationTask task, string workspace, string relativeTexDir, IReadOnlyList<string> latexArgs, int pass)
     {
-        var result = await RunProcessAsync("pdflatex", latexArgs, tempDir);
+        var result = await RunToolAsync(task, workspace, relativeTexDir, "pdflatex", latexArgs, "pdflatex");
 
         if (result.ExitCode == null)
         {
@@ -243,6 +283,209 @@ public class CompilationService : ICompilationService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Запускает инструмент компиляции напрямую или в одноразовом контейнере -
+    /// в зависимости от EnableIsolation. Возвращает результат любого отказа
+    /// запуска как ProcessResult, исключения наружу не просачиваются.
+    /// </summary>
+    private async Task<ProcessResult> RunToolAsync(
+        CompilationTask task,
+        string workspace,
+        string workingSubdirectory,
+        string tool,
+        IReadOnlyList<string> toolArguments,
+        string toolDisplayName)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        string? containerName = null;
+
+        if (IsolationEnabled)
+        {
+            containerName = $"tex-task-{task.TaskId:N}";
+            startInfo.FileName = "docker";
+            foreach (var arg in ContainerRunCommandBuilder.Build(
+                CompileImage,
+                containerName,
+                workspace,
+                workingSubdirectory,
+                ContainerMemoryMb,
+                ContainerCpuCount,
+                ContainerPidsLimit,
+                ContainerTmpSizeMb,
+                tool,
+                toolArguments))
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+        }
+        else
+        {
+            startInfo.FileName = tool;
+            foreach (var arg in toolArguments)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+            startInfo.WorkingDirectory = Path.Combine(workspace, workingSubdirectory);
+        }
+
+        Process? process;
+        try
+        {
+            process = Process.Start(startInfo);
+        }
+        catch (Exception ex) when (ex is Win32Exception or FileNotFoundException)
+        {
+            _logger.LogError(ex, "Failed to start {Tool} (isolation {Isolation})",
+                toolDisplayName, IsolationEnabled ? "on" : "off");
+
+            return new ProcessResult
+            {
+                Success = false,
+                Output = $"Не удалось запустить {toolDisplayName}: {ex.Message}"
+            };
+        }
+
+        if (process == null)
+        {
+            _logger.LogError("Failed to start process {Tool}", toolDisplayName);
+
+            return new ProcessResult
+            {
+                Success = false,
+                Output = $"Не удалось запустить процесс {toolDisplayName}"
+            };
+        }
+
+        using (process)
+        {
+            return await WaitAndCollectAsync(process, toolDisplayName, containerName);
+        }
+    }
+
+    /// <summary>
+    /// Ожидает завершения процесса, забирая оба потока, и на таймауте убивает
+    /// процесс вместе с потомками. Для docker-клиента дополнительно убивает
+    /// сам контейнер: убитый docker run оставил бы task-контейнер работать.
+    /// </summary>
+    private async Task<ProcessResult> WaitAndCollectAsync(Process process, string toolDisplayName, string? containerName)
+    {
+        var timeout = ProcessTimeout;
+        using var cts = new CancellationTokenSource(timeout);
+
+        // Оба потока начинают читаться до ожидания выхода. Перенаправленный поток - это
+        // pipe с буфером ограниченного размера (обычно 64 Кб). Пока буфер не заполнен,
+        // процесс пишет и работает дальше, а как только заполнится - очередная
+        // запись блокируется до того, как кто-нибудь прочитает данные с другого конца.
+        // Пока читался только stdout, процесс, пишущий много в stderr, вставал намертво:
+        // родитель ждал завершения, процесс ждал возможности запись.
+
+        // Токен передается и в чтение вывода, и в ожидание выхода: процесс может
+        // зависнуть, ничего не записав, тогда ReadToEndAsync без токена не вернется.
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+
+            return new ProcessResult
+            {
+                Success = process.ExitCode == 0,
+                ExitCode = process.ExitCode,
+                Output = await stdoutTask,
+                Error = await stderrTask
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogError("Process {Tool} exceeded the {Timeout}s limit and will be killed",
+                toolDisplayName, timeout.TotalSeconds);
+
+            KillProcessTree(process, toolDisplayName);
+
+            if (containerName != null)
+            {
+                await KillContainerAsync(containerName);
+            }
+
+            await DrainAsync(stdoutTask);
+            await DrainAsync(stderrTask);
+
+            return new ProcessResult
+            {
+                Success = false,
+                TimedOut = true,
+                Output = $"Процесс {toolDisplayName} превысил лимит {timeout.TotalSeconds:0} c и был принудительно завершен"
+            };
+        }
+    }
+
+    /// <summary>
+    /// Останавливает зависший task-контейнер по имени. Лучше лишний раз, чем висящий
+    /// контейнер с процессом пользовательского документа.
+    /// </summary>
+    private async Task KillContainerAsync(string containerName)
+    {
+        try
+        {
+            var kill = Process.Start(new ProcessStartInfo
+            {
+                FileName = "docker",
+                Arguments = $"kill {containerName}",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+
+            if (kill != null)
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await kill.WaitForExitAsync(cts.Token);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to kill container {Container}", containerName);
+        }
+    }
+
+    internal async Task<ProcessResult> RunProcessAsync(string command, string arguments, string workingDir)
+    {
+        var processStartInfo = new ProcessStartInfo
+        {
+            FileName = command,
+            Arguments = arguments,
+            WorkingDirectory = workingDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = Process.Start(processStartInfo);
+
+        if (process == null)
+        {
+            _logger.LogError("Failed to start process {Command}. Args: {Arguments}", command, arguments);
+
+            return new ProcessResult
+            {
+                Success = false,
+                Output = $"Не удалось запустить процесс {command}"
+            };
+        }
+
+        return await WaitAndCollectAsync(process, command, containerName: null);
     }
 
     /// <summary>
@@ -270,7 +513,7 @@ public class CompilationService : ICompilationService
 
     /// <summary>
     /// Ищет главный tex-файл рекурсивно и возвращает полный путь. От его каталога
-    /// зависит рабочий каталог pdflatex, поэтому метод покрыт тестами и открыт как 
+    /// зависит рабочий каталог pdflatex, поэтому метод покрыт тестами и открыт как
     /// internal
     /// </summary>
     internal static string FindMainTexFile(string directory)
@@ -304,79 +547,6 @@ public class CompilationService : ICompilationService
         catch (UnauthorizedAccessException)
         {
             return true;
-        }
-    }
-
-    internal async Task<ProcessResult> RunProcessAsync(string command, string arguments, string workingDir)
-    {
-        var processStartInfo = new ProcessStartInfo
-        {
-            FileName = command,
-            Arguments = arguments,
-            WorkingDirectory = workingDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-
-        using var process = Process.Start(processStartInfo);
-
-        if (process == null)
-        {
-            _logger.LogError("Failed to start process {Command}. Args: {Arguments}", command, arguments);
-
-            return new ProcessResult
-            {
-                Success = false,
-                Output = $"Не удалось запустить процесс {command}"
-            };
-        }
-
-        var timeout = ProcessTimeout;
-        using var cts = new CancellationTokenSource(timeout);
-
-        // Оба потока начинают читаться до ожидания выхода. Перенаправленный поток - это
-        // pipe с буфером ограниченного размера (обычно 64 Кб). Пока буфер не заполнен,
-        // процесс пишет и работает дальше, а как только заполнится - очередная
-        // запись блокируется до того, как кто-нибудь прочитает данные с другого конца.
-        // Пока читался только stdout, процесс, пишущий много в stderr, вставал намерство:
-        // родитель ждал завершения, процесс ждал возможности запись.
-
-        // Токен передается и в чтение вывода, и в ожидание выхода: процесс может 
-        // зависнуть, ничего не записав, тогда ReadToEndAsync без токена не вернется.
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
-        var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
-        
-
-        try
-        {
-            await process.WaitForExitAsync(cts.Token);
-
-            return new ProcessResult
-            {
-                Success = process.ExitCode == 0,
-                ExitCode = process.ExitCode,
-                Output = await stdoutTask,
-                Error = await stderrTask
-            };
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogError("Process {Command} exceeded the {Timeout}s limit and will be killed. Arguments {Arguments}",
-                command, timeout.TotalSeconds, arguments);
-
-            KillProcessTree(process, command);
-
-            await DrainAsync(stdoutTask);
-            await DrainAsync(stderrTask);
-
-            return new ProcessResult
-            {
-                Success = false,
-                TimedOut = true,
-                Output = $"Процесс {command} превысил лимит {timeout.TotalSeconds:0} c и был принудительно завершен"
-            };
         }
     }
 
@@ -424,19 +594,21 @@ public class CompilationService : ICompilationService
     /// <summary>
     /// Компилирует все Asymptote файлы за один вызов
     /// </summary>
-    private async Task<ProcessResult> CompileAllAsymptoteFilesAsync(string[] asyFiles, string tempDir)
+    private async Task<ProcessResult> CompileAllAsymptoteFilesAsync(CompilationTask task, string workspace, string[] asyFiles)
     {
         if (asyFiles.Length == 0)
             return new ProcessResult { Success = true, Output = "No Asymptote files to compile" };
 
-        var groups = GroupAsymptoteFilesByDirectory(asyFiles, tempDir);
+        var groups = GroupAsymptoteFilesByDirectory(asyFiles, workspace);
         var outputs = new List<string>();
         var allSucceeded = true;
 
         foreach (var (directory, fileNames) in groups)
         {
-            var result = await CompileAsymptoteGroupAsync(directory, fileNames);
-            var relativeDirectory = Path.GetRelativePath(tempDir, directory);
+            var relativeDirectory = Path.GetRelativePath(workspace, directory)
+                .Replace(Path.DirectorySeparatorChar, '/');
+
+            var result = await CompileAsymptoteGroupAsync(task, workspace, relativeDirectory, fileNames);
 
             if (!result.Success)
             {
@@ -463,9 +635,9 @@ public class CompilationService : ICompilationService
 
     /// <summary>
     /// Раскладывает найденные .asy по каталогам, в которых они лежат
-    /// 
+    ///
     /// Asy кладет результат в свой рабочий каталог, а includegraphics из tex-файла
-    /// ищет картинку рядом с собой. Один вызов из корня с полными путями сложил бы все 
+    /// ищет картинку рядом с собой. Один вызов из корня с полными путями сложил бы все
     /// картинки в корень, и подключение бы сломалось.
     /// </summary>
     internal static List<(string Directory, string[] FileNames)> GroupAsymptoteFilesByDirectory(
@@ -481,21 +653,22 @@ public class CompilationService : ICompilationService
             .ToList();
     }
 
-    private async Task<ProcessResult> CompileAsymptoteGroupAsync(string directory, string[] fileNames)
-    { 
+    private async Task<ProcessResult> CompileAsymptoteGroupAsync(
+        CompilationTask task, string workspace, string relativeDirectory, string[] fileNames)
+    {
         try
         {
-            var quotedNames = fileNames.Select(name => $"\"{name}\"");
-            var arguments = string.Join(" ", quotedNames);
-
             _logger.LogDebug("Compiling {Count} Asymptote files in {Directory}: {Files}",
-                fileNames.Length, directory, string.Join(", ", fileNames));
+                fileNames.Length, relativeDirectory, string.Join(", ", fileNames));
 
-            return await RunProcessAsync("asy", arguments, directory);
+            var asyArguments = new List<string> { "asy" };
+            asyArguments.AddRange(fileNames);
+
+            return await RunToolAsync(task, workspace, relativeDirectory, "asy", asyArguments, "asy");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error compiling Asymptote files in {Directory}", directory);
+            _logger.LogError(ex, "Error compiling Asymptote files in {Directory}", relativeDirectory);
             return new ProcessResult
             {
                 Success = false,
@@ -592,4 +765,3 @@ public class CompilationService : ICompilationService
         }
     }
 }
-    
