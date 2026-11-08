@@ -33,17 +33,19 @@ jobs:
             docker stop texcompiler-app || true
             docker rm texcompiler-app || true
 
-            # --restart unless-stopped: без него контейнер не поднимается после 
+            # --restart unless-stopped: без него контейнер не поднимается после
             # перезагрузки VDS, и сервер лежит, пока кто-нибудь не заметит.
+            # docker.sock: приложение запускает компиляцию в одноразовых контейнерах.
+            # Контейнеру компиляции сокет не передается - только этому, app-контейнеру.
+            # MOUNT_TASKS_DIR вида /var/lib/texcompiler-tasks:/tasks: каталог рабочих
+            # областей задач, общий с dockerd. Владелец на хосте - uid 1000 (см. README).
+            # Комментарии только над командой: внутри переносов строк bash их
+            # обрабатывает иначе, и docker run теряет аргументы (был инцидент).
             docker run -d \
               --name texcompiler-app \
               --restart unless-stopped \
               -v ${{ secrets.MOUNT_STORAGE_DIR }} \
               -v ${{ secrets.MOUNT_LOGS_DIR}} \
-              # docker.sock: приложение запускает компиляцию в одноразовых контейнерах.
-              # Контейнеру компиляции сокет не передается - только этому, app-контейнеру.
-              # MOUNT_TASKS_DIR вида /var/lib/texcompiler-tasks:/tasks: каталог рабочих
-              # областей задач, общий с dockerd. Владелец на хосте - uid 1000 (см. README).
               -v /var/run/docker.sock:/var/run/docker.sock \
               -v ${{ secrets.MOUNT_TASKS_DIR }} \
               -p ${{ secrets.PORT_OUTER }}:${{ secrets.PORT_INNER }} \
