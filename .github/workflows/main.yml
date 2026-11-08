@@ -25,6 +25,10 @@ jobs:
             # деплой должен упасть явно, а не создавать merge-коммит прямо на проде.
             git pull --ff-only origin main
 
+            # Образ рабочей версии сохраняем ДО пересборки: при неудачном деплое
+            # откатываемся на него автоматически, а не чиним прод руками.
+            docker tag texcompiler-app:latest texcompiler-app:previous 2>/dev/null || true
+
             # ВНИМАНИЕ: базовый образ texcompiler-base:latest здесь не собирается.
             # Он должен быть собран на сервере вручную - см.раздел "Развёртывание"
             # в README.md. Изменения в Dockerfile.base автодеплой не подхватывает.
@@ -33,62 +37,99 @@ jobs:
             docker stop texcompiler-app || true
             docker rm texcompiler-app || true
 
-            # --restart unless-stopped: без него контейнер не поднимается после
-            # перезагрузки VDS, и сервер лежит, пока кто-нибудь не заметит.
-            # docker.sock: приложение запускает компиляцию в одноразовых контейнерах.
-            # Контейнеру компиляции сокет не передается - только этому, app-контейнеру.
-            # MOUNT_TASKS_DIR вида /var/lib/texcompiler-tasks:/tasks: каталог рабочих
-            # областей задач, общий с dockerd. Владелец на хосте - uid 1000 (см. README).
+            # Флаги запуска (подробности - README, раздел "Изоляция компиляции"):
+            # --restart unless-stopped - подъем контейнера после перезагрузки VDS;
+            # --group-add - доступ к docker.sock (root:docker, 660) под uid 1000;
+            # -e WorkspaceHostRoot - хостовый путь маунта задач для docker run -v.
             # Комментарии только над командой: внутри переносов строк bash их
             # обрабатывает иначе, и docker run теряет аргументы (был инцидент).
-            # Сокет на хосте принадлежит root:docker (660), приложение работает под
-            # uid 1000 и не входит в эту группу. --group-add с gid группы docker
-            # дает доступ к сокету без chmod 666 на хосте (chmod открывал бы docker
-            # любому пользователю VDS - это root-доступ к хосту).
             DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
-            # Хостовый источник маунта задач: приложение передает его в docker run -v,
-            # а dockerd резолвит источники на хосте. Берем из секрета до двоеточия,
-            # чтобы не дублировать путь вторым секретом.
             TASKS_HOST_DIR=$(echo "${{ secrets.MOUNT_TASKS_DIR }}" | cut -d: -f1)
-            docker run -d \
-              --name texcompiler-app \
-              --restart unless-stopped \
-              --group-add "$DOCKER_GID" \
-              -e "CompilationContainer__WorkspaceHostRoot=$TASKS_HOST_DIR" \
-              -v ${{ secrets.MOUNT_STORAGE_DIR }} \
-              -v ${{ secrets.MOUNT_LOGS_DIR}} \
-              -v /var/run/docker.sock:/var/run/docker.sock \
-              -v ${{ secrets.MOUNT_TASKS_DIR }} \
-              -p ${{ secrets.PORT_OUTER }}:${{ secrets.PORT_INNER }} \
-              texcompiler-app:latest
 
-            # Проверка живости. Раньше шаг был зеленым, даже если приложение падало
-            # на старте. Проверяем именно ответ по HTTP, а не наличие контейнера:
-            # с --restart unless-stopped упавший контейнер уходит в цикл перезапусков
-            # и в момент проверки может числиться работающим.
-            if command -v curl >/dev/null 2>&1; then
-              alive=0
-              for attempt in $(seq 1 10); do
-                if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${{ secrets.PORT_OUTER}}/"; then
-                  echo "Приложение отвечает (попытка $attempt)"
-                  alive=1
-                  break
-                fi
-                echo "Приложение не отвечает (попытка $attempt), ждем 3 с"
-                sleep 3
-              done
+            run_app() {
+              docker run -d \
+                --name texcompiler-app \
+                --restart unless-stopped \
+                --group-add "$DOCKER_GID" \
+                -e "CompilationContainer__WorkspaceHostRoot=$TASKS_HOST_DIR" \
+                -v ${{ secrets.MOUNT_STORAGE_DIR }} \
+                -v ${{ secrets.MOUNT_LOGS_DIR}} \
+                -v /var/run/docker.sock:/var/run/docker.sock \
+                -v ${{ secrets.MOUNT_TASKS_DIR }} \
+                -p ${{ secrets.PORT_OUTER }}:${{ secrets.PORT_INNER }} \
+                "$1"
+            }
 
-              if [ "$alive" -ne 1 ]; then
-                echo "Приложение не ответило за 30 секунд. Последние строки лога контейнера:"
-                docker logs --tail 50 texcompiler-app || true
-                exit 1
+            # Откат на сохраненный образ: показываем лог упавшей версии, поднимаем
+            # previous и падаем явно - workflow красный, прод снова работает.
+            rollback() {
+              docker logs --tail 50 texcompiler-app || true
+              echo "Откат на предыдущий образ: $1"
+              docker stop texcompiler-app || true
+              docker rm texcompiler-app || true
+              run_app texcompiler-app:previous
+              exit 1
+            }
+
+            run_app texcompiler-app:latest
+
+            # Проверка живости: контейнер с --restart unless-stopped может числиться
+            # работающим, будучи в цикле перезапусков, поэтому смотрим именно HTTP-ответ.
+            alive=0
+            for attempt in $(seq 1 10); do
+              if curl -fsS -o /dev/null --max-time 5 "http://127.0.0.1:${{ secrets.PORT_OUTER}}/"; then
+                echo "Приложение отвечает (попытка $attempt)"
+                alive=1
+                break
               fi
-            else
-              echo "ВНИМАНИЕ: curl на сервере не найден, проверка живости пропущена"
+              echo "Приложение не отвечает (попытка $attempt), ждем 3 с"
+              sleep 3
+            done
+
+            if [ "$alive" -ne 1 ]; then
+              rollback "приложение не ответило за 30 секунд"
             fi
 
-            # Чистка только висячих слоев, оставшихся от пересборки. Тегированные образы,
-            # включая texcompiler-base:latest, не затрагиваются. Выполняется после успешной
-            # проверки: при неудачном деплое прежние слои могут еще понадобиться.
-            docker image prune -f
+            # Smoke: реальная компиляция через API. Проверка живости видит только
+            # фронт и не замечает сломанный контур компиляции - была серия инцидентов,
+            # когда контейнер стартовал, а pdflatex завершался с ошибкой. Минимальный
+            # документ идет тем же пайплайном, что и пользовательские файлы.
+            smoke_dir=$(mktemp -d)
+            printf '%s\n' '\documentclass{article}\begin{document}smoke\end{document}' > "$smoke_dir/smoke.tex"
+            upload=$(curl -fsS -F "texFile=@$smoke_dir/smoke.tex" "http://127.0.0.1:${{ secrets.PORT_OUTER }}/api/upload")
+            task_id=$(echo "$upload" | grep -o '"taskId":"[^"]*"' | cut -d'"' -f4)
+            if [ -z "$task_id" ]; then
+              rm -rf "$smoke_dir"
+              rollback "smoke: в ответе upload нет taskId"
+            fi
 
+            smoke_ok=0
+            for attempt in $(seq 1 40); do
+              status=$(curl -fsS --max-time 5 "http://127.0.0.1:${{ secrets.PORT_OUTER }}/api/status/$task_id" || true)
+              if echo "$status" | grep -q '"status":"Completed"'; then
+                smoke_ok=1
+                break
+              fi
+              if echo "$status" | grep -q '"status":"Failed"'; then
+                break
+              fi
+              sleep 3
+            done
+
+            if [ "$smoke_ok" -ne 1 ]; then
+              rm -rf "$smoke_dir"
+              rollback "smoke: тестовый документ не скомпилировался (task $task_id)"
+            fi
+
+            if ! curl -fsS --max-time 10 -o "$smoke_dir/smoke.pdf" "http://127.0.0.1:${{ secrets.PORT_OUTER }}/api/download/$task_id" || ! test -s "$smoke_dir/smoke.pdf"; then
+              rm -rf "$smoke_dir"
+              rollback "smoke: PDF не скачался или пуст (task $task_id)"
+            fi
+            echo "Smoke OK: PDF $(wc -c < "$smoke_dir/smoke.pdf") байт (task $task_id)"
+            rm -rf "$smoke_dir"
+
+            # Чистка только висячих слоев, оставшихся от пересборки. Тегированные
+            # образы, включая texcompiler-base:latest и texcompiler-app:previous,
+            # не затрагиваются. Выполняется после успешных проверок: при неудачном
+            # деплое прежние слои могут еще понадобиться.
+            docker image prune -f
