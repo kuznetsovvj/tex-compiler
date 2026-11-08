@@ -96,7 +96,9 @@ jobs:
             # документ идет тем же пайплайном, что и пользовательские файлы.
             smoke_dir=$(mktemp -d)
             printf '%s\n' '\documentclass{article}\begin{document}smoke\end{document}' > "$smoke_dir/smoke.tex"
-            upload=$(curl -fsS -F "texFile=@$smoke_dir/smoke.tex" "http://127.0.0.1:${{ secrets.PORT_OUTER }}/api/upload")
+            # || true: под set -e упавшая команда в подстановке убила бы скрипт
+            # до rollback, а пустой taskId обрабатывается ниже
+            upload=$(curl -fsS -F "texFile=@$smoke_dir/smoke.tex" "http://127.0.0.1:${{ secrets.PORT_OUTER }}/api/upload" || true)
             task_id=$(echo "$upload" | grep -o '"taskId":"[^"]*"' | cut -d'"' -f4)
             if [ -z "$task_id" ]; then
               rm -rf "$smoke_dir"
