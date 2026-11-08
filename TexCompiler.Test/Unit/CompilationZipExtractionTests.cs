@@ -97,7 +97,10 @@ namespace TexCompiler.UnitTests.Services
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["CompilationSettings:ProcessTimeoutSeconds"] = "30"
+                    ["CompilationSettings:ProcessTimeoutSeconds"] = "30",
+                    // Без docker в тестовом окружении: упали бы на запуске транспорта,
+                    // а не на проверяемой здесь распаковке
+                    ["CompilationContainer:EnableIsolation"] = "false"
                 })
                 .Build();
 
