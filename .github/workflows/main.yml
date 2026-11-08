@@ -46,10 +46,15 @@ jobs:
             # дает доступ к сокету без chmod 666 на хосте (chmod открывал бы docker
             # любому пользователю VDS - это root-доступ к хосту).
             DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+            # Хостовый источник маунта задач: приложение передает его в docker run -v,
+            # а dockerd резолвит источники на хосте. Берем из секрета до двоеточия,
+            # чтобы не дублировать путь вторым секретом.
+            TASKS_HOST_DIR=$(echo "${{ secrets.MOUNT_TASKS_DIR }}" | cut -d: -f1)
             docker run -d \
               --name texcompiler-app \
               --restart unless-stopped \
               --group-add "$DOCKER_GID" \
+              -e "CompilationContainer__WorkspaceHostRoot=$TASKS_HOST_DIR" \
               -v ${{ secrets.MOUNT_STORAGE_DIR }} \
               -v ${{ secrets.MOUNT_LOGS_DIR}} \
               -v /var/run/docker.sock:/var/run/docker.sock \
