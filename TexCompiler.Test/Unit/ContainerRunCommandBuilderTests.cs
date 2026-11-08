@@ -38,7 +38,7 @@ namespace TexCompiler.UnitTests.Services
             Assert.Contains("--security-opt no-new-privileges", line);
             Assert.Contains("--read-only", line);
             Assert.Contains("--tmpfs /tmp:rw,exec,size=64m", line);
-            Assert.Contains("--user 65534:65534", line);
+            Assert.Contains("--user 1000:1000", line);
             Assert.Contains("--memory 1024m", line);
             Assert.Contains("--cpus 1", line);
             Assert.Contains("--pids-limit 256", line);
