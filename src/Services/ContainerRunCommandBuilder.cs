@@ -13,8 +13,14 @@ namespace TexCompiler.Services
     /// </summary>
     internal static class ContainerRunCommandBuilder
     {
-        /// <summary>UID/GID nobody: компиляция не от root даже внутри task-контейнера</summary>
-        internal const string ContainerUser = "65534:65534";
+        /// <summary>
+        /// UID/GID процесса внутри task-контейнера. Совпадает с UID приложения на хосте:
+        /// workspace задачи на bind-монте принадлежит uid 1000, и процесс компиляции
+        /// обязан иметь право записи в него. nobody (65534) не имеет - pdflatex не
+        /// смог бы создать ни .log, ни .pdf. На изоляцию uid не влияет: контейнер
+        /// всё равно без сети, capabilities и записываемого rootfs.
+        /// </summary>
+        internal const string ContainerUser = "1000:1000";
 
         public static List<string> Build(
             string image,
