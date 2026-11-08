@@ -27,13 +27,23 @@ public class CompilationService : ICompilationService
     private string CompileImage =>
         _configuration.GetValue<string>("CompilationContainer:Image") ?? "texcompiler-base:latest";
 
-    // Каталог рабочих областей задач. Должен совпадать с хостовым путем: dockerd
-    // монтирует workspace по пути, который видит приложение, поэтому bind на VDS
-    // выполняется 1:1 (хост:/var/lib/texcompiler-tasks -> контейнер:/tasks).
-    // Без настройки - системный temp: приложение работает, но docker-изоляция
-    // смонтирует лишь каталог внутри контейнера приложения и документы не соберутся.
+    // Каталог рабочих областей задач, как его видит само приложение (сторона
+    // контейнера приложения). Все файловые операции идут по нему.
+    // Без настройки - системный temp.
     private string WorkspaceRoot =>
         _configuration.GetValue<string>("CompilationContainer:WorkspaceRoot") ?? Path.GetTempPath();
+
+    // Тот же каталог, но в путях ХОСТА: его требует docker run -v, потому что
+    // dockerd резолвит источник bind-монтирования на хосте. Если приложение видит
+    // каталог по пути /tasks, а на хосте он лежит в /var/lib/texcompiler-tasks,
+    // сюда должны прописать именно /var/lib/texcompiler-tasks (workflow делает это
+    // автоматически из секрета MOUNT_TASKS_DIR). Передача контейнерного пути
+    // приводила к молча созданному dockerd пустому каталогу на хосте: pdflatex
+    // видел пустой /work и завершался с кодом 1 без единого файла.
+    // По умолчанию совпадает с WorkspaceRoot - так корректно в режиме
+    // EnableIsolation=false и при монтировании 1:1.
+    private string WorkspaceHostRoot =>
+        _configuration.GetValue<string>("CompilationContainer:WorkspaceHostRoot") ?? WorkspaceRoot;
 
     private string ContainerMemoryMb =>
         _configuration.GetValue("CompilationContainer:MemoryMegabytes", 1024).ToString();
@@ -312,10 +322,17 @@ public class CompilationService : ICompilationService
         {
             containerName = $"tex-task-{task.TaskId:N}";
             startInfo.FileName = "docker";
+
+            // workspace дан с контейнерной стороны (например /tasks/tex_x), а -v
+            // требует хостового пути: пересобираем его от хостового корня
+            var workspaceHostPath = Path.Combine(
+                WorkspaceHostRoot,
+                Path.GetRelativePath(WorkspaceRoot, workspace));
+
             foreach (var arg in ContainerRunCommandBuilder.Build(
                 CompileImage,
                 containerName,
-                workspace,
+                workspaceHostPath,
                 workingSubdirectory,
                 ContainerMemoryMb,
                 ContainerCpuCount,
