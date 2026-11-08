@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using System.Data;
 using System.Diagnostics;
 using System.IO.Compression;
@@ -91,7 +91,7 @@ public class CompilationService : ICompilationService
             }
 
 
-            var latexArgs = $"-interaction=nonstopmode -shell-escape \"{mainTexFile}\"";
+            var latexArgs = BuildLatexArguments(mainTexFile);
             var pdfPath = Path.Combine(texDir, Path.GetFileNameWithoutExtension(mainTexFile) + ".pdf");
 
             // Цепочка проходов идёт до конца независимо от кодов возврата. Ранний выход
@@ -206,6 +206,16 @@ public class CompilationService : ICompilationService
             // Гарантированное удаление временной папки
             await CleanupTempDirectory(tempDir);
         }
+    }
+
+    /// <summary>
+    /// Собирает аргументы pdflatex. Shell escape принудительно выключен: без этого
+    /// пользовательский документ через \write18 получил бы выполнение произвольных
+    /// команд внутри контейнера (чтение файлов, изменение приложения, сеть).
+    /// </summary>
+    internal static string BuildLatexArguments(string mainTexFile)
+    {
+        return $"-interaction=nonstopmode -no-shell-escape \"{mainTexFile}\"";
     }
 
     /// <summary>
@@ -406,8 +416,9 @@ public class CompilationService : ICompilationService
     }
 
     /// <summary>
-    /// Завершает процесс вместе с потомками: pdflatex c -shell-escape порождает дочерние процессы и убийство одного родителя
-    /// оставило бы их работать
+    /// Завершает процесс вместе с потомками: убийство одного родителя оставило бы
+    /// дочерние процессы (если они появятся) работать. Оставлено как подстраховка
+    /// на пути таймаута несмотря на запрещенный shell-escape
     /// </summary>
     private void KillProcessTree(Process process, string command)
     {
