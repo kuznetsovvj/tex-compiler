@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Logging;
 using System.Data;
 using System.Diagnostics;
-using System.IO.Compression;
 using TexCompiler.Models;
 using TexCompiler.Services;
 
@@ -57,7 +56,9 @@ public class CompilationService : ICompilationService
             // уходил в pdflatex как исходник.
             if (ArchiveDetector.IsZipArchive(task.SourceFile))
             {
-                ExtractZipArchive(task.SourceFile, tempDir);
+                // Только SafeZipExtractor: он отсекает Zip Slip и zip-бомбы.
+                // Собственная распаковка здесь раньше писала по путям ../... за пределами tempDir
+                SafeZipExtractor.ExtractTo(task.SourceFile, tempDir);
                 var mainTexPath = FindMainTexFile(tempDir);
 
                 if (string.IsNullOrEmpty(mainTexPath))
@@ -286,22 +287,6 @@ public class CompilationService : ICompilationService
 
         // Или берем первый .tex файл
         return mainFile ?? texFiles.First();
-    }
-
-    private void ExtractZipArchive(string zipPath, string extractPath)
-    {
-        using var archive = ZipFile.OpenRead(zipPath);
-        foreach (var entry in archive.Entries)
-        {
-            var fullPath = Path.Combine(extractPath, entry.FullName);
-            var directory = Path.GetDirectoryName(fullPath);
-
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-                Directory.CreateDirectory(directory);
-
-            if (!entry.FullName.EndsWith("/")) // не директория
-                entry.ExtractToFile(fullPath, true);
-        }
     }
 
     private bool IsDirectoryInUse(string tempDir)
