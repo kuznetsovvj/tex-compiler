@@ -98,9 +98,13 @@ public class CompilationService : ICompilationService
             // уходил в pdflatex как исходник.
             if (ArchiveDetector.IsZipArchive(task.SourceFile))
             {
-                // Только SafeZipExtractor: он отсекает Zip Slip и zip-бомбы.
-                // Собственная распаковка здесь раньше писала по путям ../... за пределами workspace
-                SafeZipExtractor.ExtractTo(task.SourceFile, workspace);
+                // Только SafeZipExtractor: он отсекает Zip Slip и zip-бомбы
+                // (лимиты - в конфигурации ExtractionLimits). Собственная распаковка
+                // здесь раньше писала по путям ../... за пределами workspace
+                SafeZipExtractor.ExtractTo(
+                    task.SourceFile,
+                    workspace,
+                    ExtractionLimits.FromConfiguration(_configuration));
                 var mainTexPath = FindMainTexFile(workspace);
 
                 if (string.IsNullOrEmpty(mainTexPath))
