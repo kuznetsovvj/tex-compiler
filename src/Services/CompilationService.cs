@@ -265,7 +265,32 @@ public class CompilationService : ICompilationService
     /// </summary>
     internal static IReadOnlyList<string> BuildLatexArguments(string mainTexFile)
     {
-        return new List<string> { "-interaction=nonstopmode", "-no-shell-escape", mainTexFile };
+        return new List<string> { "-interaction=nonstopmode", "-no-shell-escape", SanitizeFileArgument(mainTexFile) };
+    }
+
+    /// <summary>
+    /// Аргументы asy - имена файлов. Само слово "asy" сюда не входит: команду
+    /// подставляет транспорт (docker run или ProcessStartInfo), иначе она
+    /// продублировалась бы в argv (asy asy ...) и asy пытался бы обработать
+    /// файл по имени "asy".
+    /// </summary>
+    internal static IReadOnlyList<string> BuildAsymptoteArguments(IEnumerable<string> fileNames)
+    {
+        return fileNames.Select(SanitizeFileArgument).ToList();
+    }
+
+    /// <summary>
+    /// Имя файла, которое уходит процессу аргументом. Web2C (pdflatex) и asy
+    /// разбирают любой аргумент с '-' в начале как опцию: файл "-shell-escape"
+    /// вернул бы shell escape после нашего запрета, "-output-directory=/x"
+    /// перенаправил бы вывод. Префикс './' уводит имя из разбора опций,
+    /// оставляя тот же файл в рабочем каталоге. Пробелы, кавычки и прочие
+    /// shell-метасимволы не трогаем: ArgumentList передает аргумент как есть,
+    /// shell-разбора нет.
+    /// </summary>
+    internal static string SanitizeFileArgument(string fileName)
+    {
+        return fileName.StartsWith("-", StringComparison.Ordinal) ? "./" + fileName : fileName;
     }
 
     /// <summary>
@@ -384,8 +409,31 @@ public class CompilationService : ICompilationService
 
         using (process)
         {
-            return await WaitAndCollectAsync(process, toolDisplayName, containerName);
+            var result = await WaitAndCollectAsync(process, toolDisplayName, containerName);
+
+            // Подробности неуспеха остаются в серверном журнале: без хвостов вывода
+            // падение pdflatex/asy/docker видно только по коду возврата, и диагностика
+            // превращается в перебор гипотез
+            if (!result.Success && !result.TimedOut)
+            {
+                _logger.LogWarning(
+                    "{Tool} завершился неуспешно (код {ExitCode}). Хвост stdout: {OutputTail}{Newline}Хвост stderr: {ErrorTail}",
+                    toolDisplayName, result.ExitCode, Tail(result.Output), Environment.NewLine, Tail(result.Error));
+            }
+
+            return result;
         }
+    }
+
+    /// <summary>Хвост вывода процесса для журнала: полные логи компиляции целиком не нужны</summary>
+    private static string Tail(string? text, int maxLength = 2000)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return string.Empty;
+        }
+
+        return text.Length <= maxLength ? text : text.Substring(text.Length - maxLength);
     }
 
     /// <summary>
@@ -678,10 +726,8 @@ public class CompilationService : ICompilationService
             _logger.LogDebug("Compiling {Count} Asymptote files in {Directory}: {Files}",
                 fileNames.Length, relativeDirectory, string.Join(", ", fileNames));
 
-            var asyArguments = new List<string> { "asy" };
-            asyArguments.AddRange(fileNames);
-
-            return await RunToolAsync(task, workspace, relativeDirectory, "asy", asyArguments, "asy");
+            return await RunToolAsync(
+                task, workspace, relativeDirectory, "asy", BuildAsymptoteArguments(fileNames), "asy");
         }
         catch (Exception ex)
         {
