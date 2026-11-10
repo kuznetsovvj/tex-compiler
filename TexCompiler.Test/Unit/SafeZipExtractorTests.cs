@@ -1,4 +1,4 @@
-﻿using System.IO.Compression;
+using System.IO.Compression;
 using TexCompiler.Services;
 
 namespace TexCompiler.UnitTests.Services
@@ -102,7 +102,8 @@ namespace TexCompiler.UnitTests.Services
             var zipPath = CreateArchive(("a.tex", "a"), ("b.tex", "b"), ("c.tex", "c"));
             var target = CreateTargetDirectory();
 
-            Assert.Throws<InvalidDataException>(() => SafeZipExtractor.ExtractTo(zipPath, target, maxEntryCount: 2));
+            Assert.Throws<InvalidDataException>(() =>
+                SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxEntries = 2 }));
         }
 
         [Fact]
@@ -111,7 +112,8 @@ namespace TexCompiler.UnitTests.Services
             var zipPath = CreateArchive(("big.tex", new string('x', 4096)));
             var target = CreateTargetDirectory();
 
-            Assert.Throws<InvalidDataException>(() => SafeZipExtractor.ExtractTo(zipPath, target, maxTotalBytes: 1024));
+            Assert.Throws<InvalidDataException>(() =>
+                SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxTotalBytes = 1024 }));
         }
 
         [Fact]
@@ -120,8 +122,57 @@ namespace TexCompiler.UnitTests.Services
             var zipPath = CreateArchive(("small.tex", new string('x', 100)));
             var target = CreateTargetDirectory();
 
-            SafeZipExtractor.ExtractTo(zipPath, target, maxTotalBytes: 4096);
+            SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxTotalBytes = 4096 });
             Assert.True(File.Exists(Path.Combine(target, "small.tex")));
+        }
+
+        [Fact]
+        public void ExtractTo_SingleFileOverLimit_Throws()
+        {
+            // Один гигантский файл - суммарный лимит здесь ни при чем
+            var zipPath = CreateArchive(("big.tex", new string('x', 4096)));
+            var target = CreateTargetDirectory();
+
+            var ex = Assert.Throws<InvalidDataException>(() =>
+                SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxFileBytes = 1024 }));
+
+            Assert.Contains("big.tex", ex.Message);
+        }
+
+        [Fact]
+        public void ExtractTo_HighCompressionRatio_Throws()
+        {
+            // Классическая zip-бомба: 2 МБ повторяющихся символов сжимаются
+            // до единиц килобайт, коэффициент порядка тысячи
+            var zipPath = CreateArchive(("bomb.tex", new string('x', 2_000_000)));
+            var target = CreateTargetDirectory();
+
+            Assert.Throws<InvalidDataException>(() =>
+                SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxCompressionRatio = 100 }));
+        }
+
+        [Fact]
+        public void ExtractTo_ReasonableCompressionRatio_Accepted()
+        {
+            // Тот же файл проходит при адекватном лимите: ratio-защита не должна
+            // мешать легитимным текстовым проектам
+            var zipPath = CreateArchive(("data.tex", new string('x', 2_000_000)));
+            var target = CreateTargetDirectory();
+
+            SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxCompressionRatio = 5000 });
+
+            Assert.True(File.Exists(Path.Combine(target, "data.tex")));
+        }
+
+        [Fact]
+        public void ExtractTo_DeepNesting_Throws()
+        {
+            var deepName = string.Join("/", Enumerable.Repeat("d", 40)) + "/file.tex";
+            var zipPath = CreateArchive((deepName, "x"));
+            var target = CreateTargetDirectory();
+
+            Assert.Throws<InvalidDataException>(() =>
+                SafeZipExtractor.ExtractTo(zipPath, target, new ExtractionLimits { MaxNestingDepth = 32 }));
         }
 
 

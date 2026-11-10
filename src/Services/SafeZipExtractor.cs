@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics.Contracts;
 using System.IO.Compression;
 
@@ -13,38 +13,31 @@ namespace TexCompiler.Services
     /// </summary>
     internal static class SafeZipExtractor
     {
-        /// <summary>
-        /// Предел суммарного объема распакованных данных
-        /// </summary>
-        internal const long DefaultMaxTotalBytes = 500L * 1024 * 1024;
-
-        /// <summary>
-        /// Предел числа файлов в архиве
-        /// </summary>
-        internal const int DefaultMaxEntryCount = 10_000;
-
         internal static void ExtractTo(
-            string ZipPath,
+            string zipPath,
             string destinationRoot,
-            long maxTotalBytes = DefaultMaxTotalBytes,
-            int maxEntryCount = DefaultMaxEntryCount)
+            ExtractionLimits? limits = null)
         {
-            using var archive = ZipFile.OpenRead(ZipPath);
+            limits ??= ExtractionLimits.Defaults;
 
-            if (archive.Entries.Count > maxEntryCount)
+            using var archive = ZipFile.OpenRead(zipPath);
+
+            if (archive.Entries.Count > limits.MaxEntries)
             {
                 throw new InvalidDataException(
-                    $"В архиве слишком много файлов: {archive.Entries.Count}, допустимо не более {maxEntryCount}");
+                    $"В архиве слишком много файлов: {archive.Entries.Count}, допустимо не более {limits.MaxEntries}");
             }
 
             long declaredTotal = 0;
-            foreach (var declared in archive.Entries)
+            foreach (var entry in archive.Entries)
             {
-                declaredTotal += declared.Length;
+                ValidateEntry(entry, limits);
 
-                if (declaredTotal > maxTotalBytes)
+                declaredTotal += entry.Length;
+
+                if (declaredTotal > limits.MaxTotalBytes)
                 {
-                    throw new InvalidDataException(BuildSizeLimitMessage(maxTotalBytes));
+                    throw new InvalidDataException(BuildSizeLimitMessage(limits.MaxTotalBytes));
                 }
             }
 
@@ -72,9 +65,45 @@ namespace TexCompiler.Services
                 using var source = entry.Open();
                 using var destination = new FileStream(fullPath, FileMode.Create, FileAccess.Write);
 
-                writtenTotal += CopyWithLimit(source, destination, maxTotalBytes - writtenTotal, maxTotalBytes);
+                writtenTotal += CopyWithLimit(source, destination, limits.MaxTotalBytes - writtenTotal, limits.MaxTotalBytes);
             }
 
+        }
+
+        /// <summary>
+        /// Отклоняет записи, персонально опасные независимо от суммарного объема:
+        /// гигантский одиночный файл, подозрительное сжатие (вектор zip-бомб) и
+        /// чрезмерная глубина вложенности.
+        /// </summary>
+        private static void ValidateEntry(ZipArchiveEntry entry, ExtractionLimits limits)
+        {
+            if (entry.Length > limits.MaxFileBytes)
+            {
+                throw new InvalidDataException(
+                    $"файл {entry.FullName} распаковывается до {entry.Length} байт, допустимо не более {limits.MaxFileBytes}");
+            }
+
+            var depth = entry.FullName
+                .Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries)
+                .Length;
+
+            if (depth > limits.MaxNestingDepth)
+            {
+                throw new InvalidDataException(
+                    $"файл {entry.FullName} вложен слишком глубоко: {depth} уровней, допустимо не более {limits.MaxNestingDepth}");
+            }
+
+            if (entry.Length >= ExtractionLimits.RatioFloorBytes)
+            {
+                var compressed = entry.CompressedLength;
+                long ratio = compressed == 0 ? long.MaxValue : entry.Length / Math.Max(compressed, 1);
+
+                if (ratio > limits.MaxCompressionRatio)
+                {
+                    throw new InvalidDataException(
+                        $"файл {entry.FullName} сжат подозрительно сильно (коэффициент {ratio}, допустимо не более {limits.MaxCompressionRatio})");
+                }
+            }
         }
 
         /// <summary>
@@ -142,7 +171,7 @@ namespace TexCompiler.Services
 
         private static string BuildSizeLimitMessage(long maxTotalBytes)
         {
-            return $"распакованный размер архивы превышает допустимые {maxTotalBytes} / {1024 * 1024} МБ";
+            return $"распакованный размер архива превышает допустимые {maxTotalBytes / (1024 * 1024)} МБ";
         }
     }
 }
