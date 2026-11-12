@@ -1,0 +1,46 @@
+name: Rebuild base image
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.base'
+      - '.github/workflows/base-image.yml'
+  schedule:
+    # Раз в неделю (понедельник 03:23 UTC): TeX Live и системные пакеты должны
+    # обновляться регулярно, иначе база неограниченно стареет. Слои закэшированы,
+    # пересборка занимает минуты.
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  base:
+    runs-on: ubuntu-latest
+    steps:
+      # Сборка на VDS, а не на раннере: образ многогигабайтный, передавать его
+      # через раннер долго и хрупко. На сервере слои закэшированы.
+      - name: Rebuild base image on VDS and scan it
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VDS_HOST }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          command_timeout: 30m
+          script: |
+            set -e
+            cd ${{ secrets.PROJECT_PATH }}
+            git pull --ff-only origin main
+
+            docker build -f Dockerfile.base -t texcompiler-base:latest .
+
+            # Сканирование без установки trivy на хост: trivy сам в контейнере
+            # и видит образ через docker.sock. --ignore-unfixed: падаем только
+            # когда для HIGH/CRITICAL уязвимости есть доступное обновление,
+            # иначе texlive-full шумел бы вечно.
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:latest image \
+              --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+              texcompiler-base:latest
+
+            # Приложение работает на базе этого образа, но пересборка здесь его
+            # не трогает: новая база подхватится при следующем деплое приложения.
