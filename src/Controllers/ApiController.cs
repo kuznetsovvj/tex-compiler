@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using TexCompiler.Filters;
 using TexCompiler.Models;
 using TexCompiler.Services;
@@ -32,6 +33,7 @@ namespace TexCompiler.Controllers
 		[HttpPost]
 		[Route("api/upload")]
 		[ServiceFilter(typeof(UploadSizeLimitFilter))]
+		[EnableRateLimiting("upload")]
 		public async Task<ActionResult<ApiResponse<UploadResponse>>> UploadFile([FromForm] UploadRequest request)
 		{
 
@@ -73,6 +75,17 @@ namespace TexCompiler.Controllers
 
 				var taskId = await _compilationManagerService.SubmitTaskAsync(request.TexFile);
 
+				if (taskId == null)
+				{
+					// Очередь заполнена: worker не справляется. Отказ с явным смыслом -
+					// клиент должен подождать, а не долбить сервер.
+					return StatusCode(StatusCodes.Status429TooManyRequests, new ApiResponse<UploadResponse>
+					{
+						Success = false,
+						Error = "Сервер занят: очередь компиляции заполнена. Подождите несколько минут и отправьте файл снова."
+					});
+				}
+
 				_logger.LogInformation("File upload successfully. TaskId: {TaskId}, FileName: {FileName}", taskId, request.TexFile.FileName);
 
 				return Ok(new ApiResponse<UploadResponse>
@@ -80,7 +93,7 @@ namespace TexCompiler.Controllers
 					Success = true,
 					Data = new UploadResponse
 					{
-						TaskId = taskId,
+						TaskId = taskId.Value,
 						Message = "Файл успешно загружен и поставлен в очередь на компиляцию"
 					}
 				});

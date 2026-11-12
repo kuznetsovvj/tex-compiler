@@ -1,4 +1,4 @@
-﻿using TexCompiler.Models;
+using TexCompiler.Models;
 
 namespace TexCompiler.Services
 {
@@ -93,7 +93,16 @@ namespace TexCompiler.Services
                 var tempPath = Path.GetTempPath();
                 var cutoffTime = DateTime.UtcNow - TempRetentionTime;
 
-                var tempDirs = Directory.GetDirectories(tempPath, "tex_compile_*")
+                // Рабочие каталоги задач живут в WorkspaceRoot (см. CompilationContainer),
+                // раньше лежали в системном temp под именами tex_compile_*. Каталог,
+                // оставшийся после падения приложения, сам не удалится - чистим оба
+                // места; старше срока хранения: живой каталог задачи всегда моложе
+                var workspaceRoot = _configuration.GetValue<string>("CompilationContainer:WorkspaceRoot")
+                    ?? tempPath;
+
+                var tempDirs = Directory.GetDirectories(workspaceRoot, "tex_*")
+                    .Concat(Directory.GetDirectories(tempPath, "tex_compile_*"))
+                    .Distinct()
                     .Where(dir => Directory.GetCreationTimeUtc(dir) < cutoffTime)
                     .ToList();
 
@@ -195,7 +204,13 @@ namespace TexCompiler.Services
 
                 var oldTasks = allTasks
                     .Where(task => task.CreatedAt < cutoffTime)
-                    .Where(task => task.TaskStatus == Models.CompilationTaskStatus.Completed || task.TaskStatus == Models.CompilationTaskStatus.Failed)
+                    // Зависшие Queued тоже удаляются: после перезапуска сервиса канал
+                    // теряется вместе с ними, а в хранилище такие задачи оставались бы
+                    // навсегда. Исходник такой задачи следующим же прогоном уберется
+                    // как потерянный (ссылка на задачу исчезла)
+                    .Where(task => task.TaskStatus == Models.CompilationTaskStatus.Completed
+                        || task.TaskStatus == Models.CompilationTaskStatus.Failed
+                        || task.TaskStatus == Models.CompilationTaskStatus.Queued)
                     .ToList();
 
                 var removedCount = 0;

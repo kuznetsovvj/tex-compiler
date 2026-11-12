@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using TexCompiler.Filters;
 using TexCompiler.Models;
@@ -22,8 +24,8 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
         {
             Success = false,
             Error = errors.Count > 0
-                ? $"������ ���������: {string.Join(", ", errors)}"
-                : "������ �� ������ ��������"
+                ? $"Ошибка валидации: {string.Join(", ", errors)}"
+                : "Запрос не прошел проверку"
         });
     };
 });
@@ -41,6 +43,39 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.All;
     options.KnownNetworks.Clear();
     options.KnownProxies.Clear();
+});
+
+// Rate limiting на загрузку: анонимный endpoint без квот превращался в канал
+// бесконечного заполнения storage одним клиентом. Фиксированное окно по IP;
+// RemoteIpAddress корректен, пока forwarded-заголовки обрабатываются (см. выше).
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/json";
+
+        var response = JsonSerializer.Serialize(new ApiResponse<object?>
+        {
+            Success = false,
+            Error = "Слишком много загрузок за короткое время. Подождите несколько минут."
+        });
+
+        await context.HttpContext.Response.WriteAsync(response, cancellationToken);
+    };
+
+    options.AddPolicy("upload", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue("RateLimiting:UploadPermitLimit", 20),
+                Window = TimeSpan.FromMinutes(
+                    builder.Configuration.GetValue("RateLimiting:UploadWindowMinutes", 5)),
+                // Без внутренней очереди: при переполнении - сразу отказ
+                QueueLimit = 0
+            }));
 });
 
 builder.Logging.ClearProviders();
@@ -62,6 +97,9 @@ app.UseHttpsRedirection();
 app.UseStaticFiles();
 
 app.UseRouting();
+
+// После UseRouting: политики читаются из метаданных endpoint-а
+app.UseRateLimiter();
 
 app.MapControllerRoute(
     name: "default",

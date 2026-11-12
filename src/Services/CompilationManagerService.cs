@@ -1,4 +1,4 @@
-﻿using TexCompiler.Models;
+using TexCompiler.Models;
 
 namespace TexCompiler.Services
 {
@@ -8,27 +8,39 @@ namespace TexCompiler.Services
         private readonly CompilationQueue _queue;
         private readonly IWebHostEnvironment _environment;
         private readonly ILogger<CompilationManagerService> _logger;
+        private readonly IConfiguration _configuration;
         private readonly string _storagePath;
+
+        // Сколько HTTP-запрос готов ждать свободное место в очереди, прежде чем
+        // ответить отказом. Долго держать соединение нет смысла: при переполнении
+        // задача все равно будет ждать в очереди долго.
+        private TimeSpan EnqueueWaitTimeout => TimeSpan.FromSeconds(
+            _configuration.GetValue<int>("CompilationQueue:EnqueueTimeoutSeconds", 2));
 
         public CompilationManagerService(
             ITaskStorageService taskStorage,
             CompilationQueue queue,
             IWebHostEnvironment environment,
-            ILogger<CompilationManagerService> logger)
+            ILogger<CompilationManagerService> logger,
+            IConfiguration configuration)
         {
             _taskStorage = taskStorage;
             _queue = queue;
             _environment = environment;
             _logger = logger;
+            _configuration = configuration;
             _storagePath = Path.Combine(_environment.ContentRootPath, "storage");
 
             Directory.CreateDirectory(_storagePath);
         }
 
         /// <summary>
-        /// Сохраняет загруженный файл и передает задачу потребителю очереди
+        /// Сохраняет загруженный файл и передает задачу потребителю очереди.
+        /// Возвращает null, если очередь заполнена и задача не принята: вызывающий
+        /// обязан ответить клиенту отказом. Уже сохраненный файл при отказе
+        /// удаляется - иначе отклоненные загрузки копились бы в storage без задачи.
         /// </summary>
-        public async Task<Guid> SubmitTaskAsync(IFormFile file)
+        public async Task<Guid?> SubmitTaskAsync(IFormFile file)
         {
             try
             {
@@ -43,14 +55,39 @@ namespace TexCompiler.Services
 
                 _taskStorage.AddTask(task);
 
-                await _queue.EnqueueAsync(task);
-                
+                var accepted = await _queue.TryEnqueueAsync(task, EnqueueWaitTimeout);
+                if (!accepted)
+                {
+                    _taskStorage.TryRemoveTask(task.TaskId);
+                    TryDeleteUploadedFile(filePath);
+                    _logger.LogWarning(
+                        "Compilation queue is full (capacity {Capacity}), upload rejected: {FileName}",
+                        _queue.Capacity, file.FileName);
+                    return null;
+                }
+
                 return task.TaskId;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error submitting task for file: {FileName}", file.FileName);
                 throw;
+            }
+        }
+
+        private static void TryDeleteUploadedFile(string filePath)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                {
+                    Directory.Delete(directory, recursive: true);
+                }
+            }
+            catch (Exception)
+            {
+                // Чистка не должна маскировать основной отказ: остаток доберет CleanupService
             }
         }
 

@@ -1,4 +1,4 @@
-﻿namespace TexCompiler.Models
+namespace TexCompiler.Models
 {
 	/// <summary>
 	/// Задача на компиляцию
@@ -20,7 +20,7 @@
 
 		public string SourceFile => _sourceFile;
 
-		public DateTime CreatedAt { get; }
+		public DateTime CreatedAt { get; init; }
 
 		public DateTime? StartedAt { get; set; }
 

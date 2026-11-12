@@ -1,8 +1,9 @@
-﻿using Moq;
+using Moq;
 using Microsoft.AspNetCore.Http;
 using TexCompiler.Models;
 using TexCompiler.Services;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace TexCompiler.UnitTests.Services
@@ -33,10 +34,9 @@ namespace TexCompiler.UnitTests.Services
             _service = new CompilationManagerService(
                 _taskStorageMock.Object,
                 _queue,
-
-
                 _environmentMock.Object,
-                _loggerMock.Object);
+                _loggerMock.Object,
+                new ConfigurationBuilder().Build());
         }
 
         [Fact]
@@ -56,9 +56,10 @@ namespace TexCompiler.UnitTests.Services
             var result = await _service.SubmitTaskAsync(fileMock.Object);
 
             // Assert
-            Assert.NotEqual(Guid.Empty, result);
+            Assert.True(result.HasValue);
+            Assert.NotEqual(Guid.Empty, result.Value);
             Assert.NotNull(capturedTask);
-            Assert.Equal(capturedTask.TaskId, result);
+            Assert.Equal(capturedTask.TaskId, result.Value);
 
             // Проверяем что файл создался в тестовой директории
             var storageDir = Path.Combine(_tempTestDir, "storage");
@@ -106,7 +107,33 @@ namespace TexCompiler.UnitTests.Services
                 break;
             }
 
-            Assert.Equal(taskId, Assert.Single(queued).TaskId);
+            Assert.Equal(taskId.Value, Assert.Single(queued).TaskId);
+        }
+
+        [Fact]
+        public async Task SubmitTask_QueueFull_ReturnsNullAndCleansUp()
+        {
+            var config = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["CompilationQueue:Capacity"] = "1",
+                    ["CompilationQueue:EnqueueTimeoutSeconds"] = "1"
+                })
+                .Build();
+            var queue = new CompilationQueue(config);
+            var service = new CompilationManagerService(
+                _taskStorageMock.Object, queue, _environmentMock.Object, _loggerMock.Object, config);
+
+            var firstId = await service.SubmitTaskAsync(CreateFile("first.tex"));
+            Assert.True(firstId.HasValue);
+
+            var rejected = await service.SubmitTaskAsync(CreateFile("second.tex"));
+
+            Assert.Null(rejected);
+            // Отклоненная загрузка не осталась ни в storage, ни в хранилище задач
+            var storageDir = Path.Combine(_tempTestDir, "storage");
+            Assert.Single(Directory.GetDirectories(storageDir));
+            _taskStorageMock.Verify(t => t.TryRemoveTask(It.IsAny<Guid>()), Times.Once);
         }
 
         [Fact]

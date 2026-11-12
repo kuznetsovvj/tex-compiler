@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -129,6 +129,58 @@ namespace TexCompiler.UnitTests.Services
             _service.PerformFullCleanup();
             Assert.False(File.Exists(orphan), "файл прежней раскладки без задачи должен удалиться");
             Assert.True(File.Exists(referenced), "файл прежней раскладки с живой задачей - нет");
+        }
+
+        [Fact]
+        public void PerformFullCleanup_OldQueuedTask_IsRemovedFromStorage()
+        {
+            // Зависшая в Queued дольше срока хранения задача удаляется из хранилища:
+            // после перезапуска сервиса канал теряется вместе с ними
+            var queued = AgedTask(CompilationTaskStatus.Queued, TimeSpan.FromHours(3));
+
+            GivenTasks(queued);
+
+            _service.PerformFullCleanup();
+
+            _taskStorageService.Verify(t => t.TryRemoveTask(queued.TaskId), Times.Once);
+        }
+
+        [Fact]
+        public void PerformFullCleanup_OldFailedTask_IsRemovedFromStorage()
+        {
+            var failed = AgedTask(CompilationTaskStatus.Failed, TimeSpan.FromHours(3));
+
+            GivenTasks(failed);
+
+            _service.PerformFullCleanup();
+
+            _taskStorageService.Verify(t => t.TryRemoveTask(failed.TaskId), Times.Once);
+        }
+
+        [Fact]
+        public void PerformFullCleanup_RecentQueuedTask_IsKept()
+        {
+            var queued = new CompilationTask(Path.Combine(_storageDir, "fresh", "doc.tex"))
+            {
+                TaskStatus = CompilationTaskStatus.Queued
+            };
+
+            GivenTasks(queued);
+
+            _service.PerformFullCleanup();
+
+            _taskStorageService.Verify(t => t.TryRemoveTask(It.IsAny<Guid>()), Times.Never);
+        }
+
+        private static CompilationTask AgedTask(CompilationTaskStatus status, TimeSpan age)
+        {
+            // CreatedAt ставится в конструкторе; init-сеттер позволяет состарить
+            // задачу в тесте без рефлексии к backing field
+            return new CompilationTask(Path.Combine("storage", "old", "doc.tex"))
+            {
+                TaskStatus = status,
+                CreatedAt = DateTime.UtcNow - age
+            };
         }
 
         [Fact]
