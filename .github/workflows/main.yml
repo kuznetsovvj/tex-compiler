@@ -29,9 +29,9 @@ jobs:
             # откатываемся на него автоматически, а не чиним прод руками.
             docker tag texcompiler-app:latest texcompiler-app:previous 2>/dev/null || true
 
-            # ВНИМАНИЕ: базовый образ texcompiler-base:latest здесь не собирается.
-            # Он должен быть собран на сервере вручную - см.раздел "Развёртывание"
-            # в README.md. Изменения в Dockerfile.base автодеплой не подхватывает.
+            # ВНИМАНИЕ: базовый образ texcompiler-base:latest здесь не собирается -
+            # им владеет workflow base-image.yml (по расписанию и при изменении
+            # Dockerfile.base), см. README. Здесь он должен уже существовать.
             docker build -f Dockerfile.app -t texcompiler-app:latest .
 
             docker stop texcompiler-app || true

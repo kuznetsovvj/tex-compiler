@@ -2,14 +2,15 @@ FROM texcompiler-base:latest
 
 # Базовый образ - это TeX Live поверх Ubuntu 22.04, .NET в нем нет. Здесь ставится SDK,
 # которым ниже публикуется приложение. Пакет packages-microsoft-prod.deb подключает
-# репозиторий Microsoft: dotnet-sdk-8.0 в стандартных репозиториях Ubuntu 22.04 отсутствует
+# репозиторий Microsoft: dotnet-sdk-10.0 в стандартных репозиториях Ubuntu 22.04 отсутствует.
+# Целевая версия - .NET 10 LTS: поддержка net8 закончилась в ноябре 2026.
 RUN apt-get update && \
     apt-get install -y wget ca-certificates curl gnupg && \
     wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb -O packages-microsoft-prod.deb && \
     dpkg -i packages-microsoft-prod.deb && \
     rm -f packages-microsoft-prod.db && \
     apt-get update && \
-    apt-get install -y dotnet-sdk-8.0 && \
+    apt-get install -y dotnet-sdk-10.0 && \
     rm -rf /var/lib/apt/lists/*
 
 # Клиент docker: приложение запускает компиляцию в одноразовых контейнерах через
